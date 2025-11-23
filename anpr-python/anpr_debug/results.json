@@ -1,0 +1,11 @@
+[
+  {
+    "image": "anpr_test_images\\anpr_test_images.jpg",
+    "plate": "TT",
+    "method": "full",
+    "tried": [
+      "JKC",
+      "1387"
+    ]
+  }
+]

@@ -1,0 +1,56 @@
+[
+  {
+    "image": "images\\test1.jpg",
+    "plate": "I 3 B",
+    "conf": 0.8124995827674866,
+    "tried": [
+      "B 1387 DKC '09 PLARATOYOTA"
+    ],
+    "api": null
+  },
+  {
+    "image": "images\\test2.jpg",
+    "plate": "B IGSG SPH IORT",
+    "conf": 0.8224563598632812,
+    "tried": [
+      "8 1656 SPH I0Rt:"
+    ],
+    "api": null
+  },
+  {
+    "image": "images\\test3.jpeg",
+    "plate": "IAI KU DS ZS",
+    "conf": 0.8127860426902771,
+    "tried": [
+      "141 Ku DS 25"
+    ],
+    "api": null
+  },
+  {
+    "image": "images\\test4.jpg",
+    "plate": "I 3 B",
+    "conf": 0.8204012513160706,
+    "tried": [
+      "1389 09 20"
+    ],
+    "api": null
+  },
+  {
+    "image": "images\\test5.jpg",
+    "plate": "I 3 B",
+    "conf": 0.7091934680938721,
+    "tried": [
+      "1389 DJ 09"
+    ],
+    "api": null
+  },
+  {
+    "image": "images\\test6.jpeg",
+    "plate": "SET KI",
+    "conf": 0.7741460800170898,
+    "tried": [
+      "SET KI"
+    ],
+    "api": null
+  }
+]
