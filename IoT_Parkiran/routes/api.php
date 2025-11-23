@@ -1,23 +1,11 @@
 <?php
 
-use Illuminate\Http\Request;
+use App\Http\Controllers\IoTController;
+use App\Http\Controllers\ANPRController;
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Api\AuthController;
-use App\Http\Controllers\Api\ParkingSlotController;
-use App\Http\Controllers\Api\VehicleController;
 
-Route::get('/test', fn() => response()->json(['message' => 'API Ready!']));
+Route::post('/esp/event',  [IoTController::class, 'event']);
+Route::post('/esp/command',[IoTController::class, 'getCommand']);
 
-Route::post('/login', [AuthController::class, 'login']);
-
-Route::middleware(['auth:sanctum'])->group(function () {
-
-    Route::get('/user', function (Request $request) {
-        return $request->user();
-    });
-
-    Route::post('/slot/update', [ParkingSlotController::class, 'updateStatus']);
-
-    Route::post('/entry', [VehicleController::class, 'registerEntry']);
-    Route::post('/exit', [VehicleController::class, 'registerExit']);
-});
+// Python ANPR → Laravel
+Route::post('/anpr/result', [ANPRController::class, 'storeResult']);

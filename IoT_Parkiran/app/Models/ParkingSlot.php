@@ -1,10 +1,8 @@
 <?php
 
 namespace App\Models;
-
 use Illuminate\Database\Eloquent\Model;
 
-class ParkingSlot extends Model
-{
-    //
+class ParkingSlot extends Model {
+    protected $fillable = ['name', 'occupied'];
 }
