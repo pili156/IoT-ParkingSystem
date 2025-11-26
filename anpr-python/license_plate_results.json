@@ -1,0 +1,86 @@
+{
+  "images\\test1.jpg": [
+    {
+      "text": "B 1387 DKC",
+      "confidence": 0.9940875172615051,
+      "preprocessing_method": "Morphological Clean",
+      "bbox": [
+        36,
+        54,
+        238,
+        121
+      ],
+      "detection_confidence": 0.8203504681587219
+    }
+  ],
+  "images\\test2.jpg": [
+    {
+      "text": "B 1656 SPW",
+      "confidence": 0.9366680979728699,
+      "preprocessing_method": "Dilation-Erosion",
+      "bbox": [
+        184,
+        417,
+        298,
+        487
+      ],
+      "detection_confidence": 0.6839067935943604
+    }
+  ],
+  "images\\test4.jpg": [
+    {
+      "text": "L 1389 DJ",
+      "confidence": 0.8917155265808105,
+      "preprocessing_method": "Dilation-Erosion",
+      "bbox": [
+        220,
+        201,
+        382,
+        260
+      ],
+      "detection_confidence": 0.7741199135780334
+    }
+  ],
+  "images\\test5.jpg": [
+    {
+      "text": "L1389DJ",
+      "confidence": 0.9924555420875549,
+      "preprocessing_method": "Dilation-Erosion",
+      "bbox": [
+        12,
+        13,
+        170,
+        69
+      ],
+      "detection_confidence": 0.6813926100730896
+    }
+  ],
+  "images\\test3.jpeg": [
+    {
+      "text": "K 141 K",
+      "confidence": 0.9534774422645569,
+      "preprocessing_method": "Adaptive Threshold",
+      "bbox": [
+        384,
+        471,
+        653,
+        563
+      ],
+      "detection_confidence": 0.7668699026107788
+    }
+  ],
+  "images\\test6.jpeg": [
+    {
+      "text": "C 325",
+      "confidence": 0.9486169219017029,
+      "preprocessing_method": "Blurred Threshold",
+      "bbox": [
+        141,
+        83,
+        423,
+        181
+      ],
+      "detection_confidence": 0.7054684162139893
+    }
+  ]
+}

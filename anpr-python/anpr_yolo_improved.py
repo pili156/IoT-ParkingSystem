@@ -32,11 +32,11 @@ from PIL import Image, ImageEnhance
 import pytesseract
 import re
 import time
-
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = r"C:\Programing\GitHub\IoT\IoT-ParkingSystem\anpr-python\keys\project-parkir-479209-523f16a4b91a.json"
 # YOLOv8
 from torch import device
 from ultralytics import YOLO
-
+from google.cloud import vision
 # Optional OCR libs
 try:
     import easyocr
@@ -53,7 +53,7 @@ except:
 # -------------------------
 # Configuration defaults
 # -------------------------
-DEFAULT_MODEL_PATH = "/mnt/data/lp_detector.pt"  # your uploaded model
+DEFAULT_MODEL_PATH = "/model/best.pt"  # your uploaded model
 YOLO_CONF_THRESHOLD = 0.45
 OCR_SCALE_MIN = 600  # upscale smallest dimension to this before OCR
 TESSERACT_CONFIG = r"--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
