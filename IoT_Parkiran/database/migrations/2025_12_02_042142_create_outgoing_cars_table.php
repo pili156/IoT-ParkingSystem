@@ -14,9 +14,9 @@ return new class extends Migration
         Schema::create('outgoing_cars', function (Blueprint $table) {
             $table->id();
             $table->string('car_no');
-            $table->dateTime('datetime');
-            $table->integer('total_time');
-            $table->integer('bill');
+            $table->dateTime('datetime')->nullable();
+            $table->integer('total_time')->nullable();
+            $table->integer('bill')->nullable();
             $table->timestamps();
         });
     }

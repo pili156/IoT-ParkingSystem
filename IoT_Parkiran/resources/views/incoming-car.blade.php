@@ -14,7 +14,7 @@
     <tr>
         <td>{{ $car->id }}</td>
         <td>{{ $car->car_no }}</td>
-        <td>{{ $car->datetime }}</td>
+        <td>{{ $car->waktu_masuk }}</td>
     </tr>
     @endforeach
 </table>

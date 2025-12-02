@@ -16,8 +16,8 @@
     <tr>
         <td>{{ $car->id }}</td>
         <td>{{ $car->car_no }}</td>
-        <td>{{ $car->datetime }}</td>
-        <td>{{ $car->total_time }} Jam</td>
+        <td>{{ $car->waktu_keluar }}</td>
+        <td>{{ $car->total_time }} Menit</td>
         <td>RP.{{ number_format($car->bill, 2, ',', '.') }}</td>
     </tr>
     @endforeach
