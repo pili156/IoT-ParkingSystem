@@ -8,20 +8,16 @@ class IncomingCar extends Model
 {
     protected $table = 'incoming_cars';
 
+    // Sesuaikan dengan kolom di Database kamu
     protected $fillable = [
         'car_no',
-        'waktu_masuk',
+        'datetime', // SEBELUMNYA: waktu_masuk (Salah)
     ];
 
-    public $timestamps = true;
+    protected $casts = [
+        'datetime' => 'datetime', // Biar enak diolah Carbon
+    ];
 
-    protected static function boot()
-    {
-        parent::boot();
-
-        static::creating(function ($car) {
-            // waktu masuk otomatis
-            $car->waktu_masuk = now();
-        });
-    }
+    // Opsional: Kalau mau otomatis isi datetime saat create
+    // Tapi sebaiknya diatur Controller saja biar lebih kontrol
 }

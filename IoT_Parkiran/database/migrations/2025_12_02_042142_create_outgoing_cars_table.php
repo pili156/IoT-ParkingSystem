@@ -14,9 +14,15 @@ return new class extends Migration
         Schema::create('outgoing_cars', function (Blueprint $table) {
             $table->id();
             $table->string('car_no');
-            $table->dateTime('datetime')->nullable();
+            // Waktu Masuk: Diperlukan Python untuk menghitung total_time
+            $table->dateTime('entry_time')->nullable(); 
+            // Waktu Keluar (Menggantikan 'datetime' yang kamu buat)
+            $table->dateTime('exit_time')->nullable(); 
+            // Tipe data lebih aman untuk mata uang (misal: 8 digit total, 2 digit desimal)
+            $table->decimal('bill', 8, 2)->nullable(); 
+            // Total waktu yang dihabiskan
             $table->integer('total_time')->nullable();
-            $table->integer('bill')->nullable();
+            
             $table->timestamps();
         });
     }
