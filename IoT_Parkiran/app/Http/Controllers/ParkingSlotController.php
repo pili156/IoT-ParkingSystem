@@ -3,21 +3,36 @@
 namespace App\Http\Controllers;
 
 use App\Models\ParkingSlot;
-use Illuminate\Http\Request;
 
 class ParkingSlotController extends Controller
 {
-    /**
-     * Menampilkan halaman Parking Slots (Status Real-Time).
-     */
     public function index()
     {
-        // 1. Ambil data slot dan urutkan abjad (A1, A2, dst)
-        $slots = ParkingSlot::orderBy('slot_name', 'asc')->get();
+        // Ambil data dari database
+        $dbSlots = ParkingSlot::orderBy('slot_name', 'asc')->get();
 
-        // 2. KOREKSI PENTING:
-        // Karena file view ada di 'resources/views/parking-slot.blade.php' (bukan di dalam folder screens),
-        // Hapus kata 'screens.' di depannya.
+        // Jumlah slot yang ingin ditampilkan
+        $totalSlots = 4;
+
+        // Jika jumlah data di database kurang dari 4 → tambahkan slot kosong
+        $slots = collect();
+
+        for ($i = 1; $i <= $totalSlots; $i++) {
+            // Cek apakah slot ke-i ada di database
+            $slot = $dbSlots->get($i - 1);
+
+            if ($slot) {
+                // Kalau ada → pakai data database
+                $slots->push($slot);
+            } else {
+                // Kalau tidak ada → buat default EMPTY
+                $slots->push((object)[
+                    'slot_name' => "Slot $i",
+                    'status' => 'Empty'
+                ]);
+            }
+        }
+
         return view('parking-slot', compact('slots'));
     }
 }
