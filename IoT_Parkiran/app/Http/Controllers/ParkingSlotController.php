@@ -9,15 +9,15 @@ class ParkingSlotController extends Controller
 {
     /**
      * Menampilkan halaman Parking Slots (Status Real-Time).
-     * Diambil dari 'slots()' milik DashboardController temanmu.
      */
     public function index()
     {
-        // Ambil semua data slot parkir
-        $slots = ParkingSlot::all();
+        // 1. Ambil data slot dan urutkan abjad (A1, A2, dst)
+        $slots = ParkingSlot::orderBy('slot_name', 'asc')->get();
 
-        // Tampilkan view 'parking-slot'
-        // Catatan: Pastikan kamu sudah memiliki view ini di resources/views/parking-slot.blade.php
+        // 2. KOREKSI PENTING:
+        // Karena file view ada di 'resources/views/parking-slot.blade.php' (bukan di dalam folder screens),
+        // Hapus kata 'screens.' di depannya.
         return view('parking-slot', compact('slots'));
     }
 }
