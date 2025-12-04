@@ -5,7 +5,7 @@
     <h3 class="mb-4">Outgoing Car Data</h3>
     
     <div class="table-responsive">
-        <table class="table table-bordered table-striped">
+        <table id="outgoingTable" class="table table-bordered table-striped">
             <thead class="table-dark">
                 <tr>
                     <th>ID</th>
@@ -38,3 +38,9 @@
     </div>
 </div>
 @endsection
+
+<script>
+$(document).ready(function() {
+    $('#outgoingTable').DataTable();
+});
+</script>
