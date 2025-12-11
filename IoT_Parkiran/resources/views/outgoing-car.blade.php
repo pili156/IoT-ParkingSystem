@@ -34,31 +34,17 @@
                     <td class="fw-bold text-success">Rp {{ number_format($car->bill, 0, ',', '.') }}</td>
                 </tr>
                 @empty
-    <tr>
-    <td class="text-muted text-center">-</td>
-    <td class="text-muted text-center">-</td>
-    <td class="text-muted text-center">-</td>
-    <td class="text-muted text-center">-</td>
-    <td class="text-muted text-center">-</td>
-    <td class="text-muted text-center">Belum ada data transaksi keluar.</td>
-</tr>
-@endempty
-
+                <tr>
+                    <td colspan="6" class="text-center text-muted">Belum ada data transaksi keluar.</td>
+                </tr>
+                @endforelse
             </tbody>
         </table>
     </div>
 </div>
-<<<<<<< HEAD
-@endsection
-
-<script>
-$(document).ready(function() {
-    $('#outgoingTable').DataTable();
-});
-</script>
-=======
 
 <!-- jQuery + DataTables Script -->
+<!-- Kita masukkan di sini biar tabelnya bisa di-search dan di-sort -->
 <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
@@ -66,7 +52,7 @@ $(document).ready(function() {
 <script>
 $(document).ready(function() {
     $('#outgoingTable').DataTable({
-        "order": [[ 3, "desc" ]], // Urutkan berdasarkan Exit Time (kolom ke-4)
+        "order": [[ 3, "desc" ]], // Urutkan berdasarkan Exit Time (kolom ke-4, index 3) biar yang baru keluar ada di atas
         "language": {
             "search": "Search:",
             "lengthMenu": "Show _MENU_ entries",
@@ -78,4 +64,3 @@ $(document).ready(function() {
 </script>
 
 @endsection
->>>>>>> ijal

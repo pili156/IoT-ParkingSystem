@@ -1,0 +1,417 @@
+# **Technical Specification Document – IoT-Based Smart Parking System (ANPR + IoT Sensors + Web Dashboard)**
+
+---
+
+## **1. Overview**
+
+Dokumen ini menjelaskan spesifikasi teknis lengkap untuk sistem *IoT-Based Smart Parking System* yang mengintegrasikan:
+
+* **ANPR (Automatic Number Plate Recognition)** berbasis Python + Google Vision API
+* **ESP32** untuk kontrol gate & pembacaan IR sensor slot parkir
+* **Web Backend (PHP/MySQL atau Laravel)** sebagai pusat integrasi data dan dashboard admin
+* **Arsitektur IoT** untuk monitoring real-time dan kontrol gate otomatis
+
+Dokumen ini menyelaraskan implementasi yang telah kamu buat dengan referensi PDF *“Number Plate Recognition Smart Parking Management System using IoT”* agar seluruh komponen konsisten.
+
+---
+
+## **2. System Architecture Summary**
+
+Sistem terdiri dari 3 komponen inti yang saling terhubung:
+
+### **2.1. Hardware Layer (IoT Layer)**
+
+* **ESP32** sebagai mikrokontroler utama
+* **IR Sensor** per-slot untuk mendeteksi apakah slot kosong/terisi
+* **IR Sensor Gerbang** untuk mendeteksi kendaraan masuk/keluar
+* **Servo Motor** untuk membuka/menutup gate
+* **LCD Display** untuk menampilkan jumlah slot tersedia & informasi kendaraan
+* **Wi-Fi Connectivity** antar ESP32 ↔ Backend Server
+
+### **2.2. ANPR Layer (Python + Google Vision)**
+
+* Kamera merekam plat nomor saat kendaraan:
+
+  * masuk ke area parkir
+  * keluar dari area parkir
+* Python melakukan:
+
+  1. Preprocessing (grayscale, blur, Canny edge detection)
+  2. Plate detection
+  3. OCR menggunakan **Google Vision API**
+  4. Update database: kendaraan masuk/keluar + timestamp
+
+### **2.3. Backend System (Web Layer)**
+
+* Menyimpan seluruh data kendaraan & status slot
+* Menghitung durasi parkir + biaya
+* Mengirim perintah ke ESP32 (open/close gate)
+* Menampilkan dashboard admin:
+
+  * Status slot real-time
+  * Data kendaraan masuk
+  * Data kendaraan keluar
+
+---
+
+## **3. Data Flow / Alur Kerja Sistem**
+
+### **3.1. Kendaraan Masuk**
+
+1. IR sensor gerbang membaca keberadaan kendaraan
+2. ESP32 meminta status slot ke server
+3. Jika slot tersedia → kirim perintah "open gate"
+4. Python ANPR menangkap gambar, OCR nomor kendaraan
+5. Backend menyimpan data: no. plat, waktu masuk
+6. Gate menutup otomatis saat kendaraan lewat
+
+### **3.2. Kendaraan Parkir**
+
+1. IR sensor di masing-masing slot membaca status “occupied / free”
+2. ESP32 mengirim update ke server
+3. Backend memperbarui tabel `parking_slots`
+4. Dashboard menampilkan status real-time
+
+### **3.3. Kendaraan Keluar**
+
+1. Sensor mendeteksi kendaraan keluar
+2. Python ANPR melakukan OCR exit plate
+3. Backend mencocokkan dengan entry record
+4. Hitung durasi + billing
+5. ESP32 menampilkan detail di LCD
+6. Gate keluar terbuka
+
+---
+
+## **4. Database Specification**
+
+### **4.1. Tabel: parking_slots**
+
+* slot_id
+* status (0 = kosong, 1 = terisi)
+* last_update_timestamp
+
+### **4.2. incoming_cars**
+
+* id
+* plate_number
+* entry_time
+* image_path
+
+### **4.3. outgoing_cars**
+
+* id
+* plate_number
+* exit_time
+* consumed_minutes
+* total_fee
+
+### **4.4. esp_commands**
+
+* id
+* device_id
+* command (open_gate / close_gate)
+* status (pending/processed)
+
+---
+
+## **5. API Specification**
+
+### **ESP32 → Backend**
+
+```
+POST /api/iot/sensor-update
+{ slot_id, status }
+```
+
+```
+GET /api/iot/get-command?device_id=...
+Response: { command: 'open_gate' }
+```
+
+### **ANPR Python → Backend**
+
+```
+POST /api/anpr/plate-detection
+{ event: 'entry/exit', plate_number, timestamp }
+```
+
+### **Dashboard → Backend**
+
+```
+GET /api/dashboard/parking-status
+GET /api/dashboard/incoming-cars
+GET /api/dashboard/outgoing-cars
+```
+
+---
+
+## **6. Feature Alignment With PDF**
+
+**Fitur yang sudah sesuai PDF:**
+
+* ANPR berbasis OCR + camera entry & exit
+* IR sensor untuk setiap slot parkir
+* ESP32 sebagai controller gate
+* Dashboard admin real-time
+* Perhitungan waktu parkir + billing
+
+**Fitur PDF yang perlu ditambahkan (jika ingin 100% sesuai):**
+
+* Penggunaan notifikasi LCD di gerbang (sudah ada)
+* Penekanan pada penggunaan Google Vision AI Cloud (sudah match)
+* Penjelasan proses Canny edge detection (bisa ditambah bila diperlukan)
+
+---
+
+## **7. System Requirements**
+
+### **7.1. Hardware**
+
+* ESP32 Dev Kit
+* IR Sensors
+* Servo motor (SG90 / MG995)
+* Camera (HD Webcam)
+* LCD 16x2 / OLED
+
+### **7.2. Software**
+
+* Python 3.11
+* Google Vision API
+* PHP/Laravel Backend
+* MySQL Server
+* ESP32 Arduino framework
+
+---
+
+## **8. Future Enhancements (mengikuti PDF)**
+
+* Real-time slot reservation
+* Mobile app for users
+* Online payment processing
+* Integrasi charging station EV
+* Vehicle tracking dashboard
+* Smart city integration
+
+---
+
+## **9. Conclusion**
+
+Dokumen ini menyatukan seluruh komponen teknis proyek Sistem Smart Parking berbasis IoT, memastikan bahwa cara kerja sistemmu telah konsisten dengan referensi ilmiah di PDF dan memiliki struktur backend–ANPR–IoT yang terintegrasi penuh.
+Technical Specification Document
+
+IoT-Based Smart Parking System (ANPR + IoT Sensors + Web Dashboard)
+
+1. Overview
+
+Dokumen ini menjelaskan spesifikasi teknis lengkap untuk sistem IoT-Based Smart Parking System yang mengintegrasikan:
+
+ANPR (Automatic Number Plate Recognition) berbasis Python + Google Vision API.
+
+ESP32 untuk kontrol gate & pembacaan IR sensor slot parkir.
+
+Web Backend (Laravel) sebagai pusat integrasi data dan dashboard admin.
+
+Arsitektur IoT untuk monitoring real-time dan kontrol gate otomatis.
+
+Dokumen ini menyelaraskan implementasi teknis dengan referensi ilmiah dari PDF: "Number Plate Recognition Smart Parking Management System using IoT".
+
+2. System Architecture Summary
+
+Sistem terdiri dari 3 komponen inti yang saling terhubung:
+
+2.1. Hardware Layer (IoT Layer)
+
+ESP32 Dev Module: Mikrokontroler utama untuk manajemen sensor dan aktuator.
+
+IR Sensor (x6):
+
+4 unit untuk deteksi slot parkir (Occupancy).
+
+2 unit untuk deteksi gerbang (Entry & Exit Trigger).
+
+Servo Motor (x2): Menggerakkan palang pintu masuk dan keluar (0° - 90°).
+
+LCD Display (x2):
+
+LCD 1 (Masuk): Menampilkan sisa slot kosong.
+
+LCD 2 (Keluar): Menampilkan total biaya parkir.
+
+Tombol Manual (x2): Override sistem untuk membuka gerbang secara manual.
+
+Wi-Fi Connectivity: Protokol komunikasi antara ESP32 dan Backend Server.
+
+2.2. ANPR Layer (Python + Google Vision)
+
+Kamera (Webcam/CCTV): Terhubung ke Laptop/PC Server.
+
+Python Script:
+
+Preprocessing citra (Grayscale, Blur, Canny Edge Detection).
+
+Plate Detection & Recognition menggunakan Google Vision API.
+
+Mengirim data plat nomor ke Backend API.
+
+2.3. Backend System (Web Layer - Laravel)
+
+Database Management: Menyimpan data kendaraan & status slot.
+
+Business Logic: Menghitung durasi parkir dan biaya (Billing).
+
+Command Center: Mengirim perintah OPEN_GATE ke ESP32.
+
+Admin Dashboard: Visualisasi real-time status parkir (Denah Slot) dan Log Transaksi.
+
+3. Data Flow / Alur Kerja Sistem
+
+3.1. Kendaraan Masuk (Entry Flow)
+
+Deteksi: IR sensor gerbang membaca keberadaan kendaraan.
+
+Validasi Slot: ESP32/Sistem mengecek apakah masih ada slot kosong.
+
+Capture: Jika slot tersedia, Python ANPR menangkap gambar dan melakukan OCR.
+
+Penyimpanan: Backend menyimpan No. Plat dan Waktu Masuk (entry_time).
+
+Akses: Backend mengirim perintah OPEN_GATE_ENTER ke ESP32 -> Servo Membuka.
+
+3.2. Kendaraan Parkir (Parking Flow)
+
+Monitoring: IR sensor di masing-masing slot membaca status Occupied (Ada Mobil) atau Free (Kosong).
+
+Reporting: ESP32 mengirim perubahan status ke server (/api/iot-event).
+
+Update: Backend memperbarui tabel parking_slots.
+
+Visualisasi: Dashboard admin mengubah warna slot (Hijau/Putih+Mobil) secara real-time.
+
+3.3. Kendaraan Keluar (Exit Flow)
+
+Deteksi: Sensor mendeteksi kendaraan di pos keluar.
+
+Identifikasi: Python ANPR melakukan OCR pada plat nomor keluar.
+
+Perhitungan: Backend mencocokkan dengan data masuk, menghitung durasi, dan total biaya.
+
+Informasi: ESP32 menampilkan tagihan di LCD Keluar.
+
+Akses: Setelah proses selesai, Gate keluar terbuka (OPEN_GATE_EXIT).
+
+4. Database Specification
+
+4.1. Tabel: parking_slots
+
+id (PK)
+
+slot_name (e.g., Slot A1)
+
+status (Enum: 'Full', 'Empty')
+
+updated_at (Timestamp)
+
+4.2. Tabel: incoming_cars
+
+id (PK)
+
+car_no (Plat Nomor)
+
+datetime (Waktu Masuk)
+
+image_path (Opsional)
+
+4.3. Tabel: outgoing_cars
+
+id (PK)
+
+car_no (Plat Nomor)
+
+entry_time (Datetime)
+
+exit_time (Datetime)
+
+total_time (String/Int - Durasi)
+
+bill (Decimal - Biaya)
+
+4.4. Tabel: esp_commands
+
+id (PK)
+
+command (String: 'OPEN_GATE_ENTER', 'OPEN_GATE_EXIT')
+
+consumed (Boolean: 0 = Belum dieksekusi, 1 = Sudah)
+
+5. API Specification
+
+ESP32 -> Backend
+
+POST /api/iot-event
+
+Payload: { "slot_name": "Slot 1", "event_type": "ARRIVAL" }
+
+GET /api/get-command
+
+Response: { "command": "OPEN_GATE_ENTER" } atau { "command": "WAIT" }
+
+ANPR Python -> Backend
+
+POST /api/anpr-result
+
+Payload: { "plate": "B 1234 XYZ", "mode": "entry" }
+
+6. Feature Alignment With PDF Reference
+
+Fitur yang Sesuai PDF:
+
+[x] ANPR berbasis OCR + Kamera di Entry & Exit.
+
+[x] Penggunaan IR sensor untuk setiap slot parkir individu.
+
+[x] ESP32 sebagai kontroler gerbang utama.
+
+[x] Dashboard admin berbasis web (Real-time monitoring).
+
+[x] Perhitungan biaya otomatis berdasarkan durasi.
+
+Fitur Tambahan (Enhancement):
+
+[x] LCD Info: Menampilkan sisa slot di gerbang masuk (User Convenience).
+
+[x] Manual Override: Tombol fisik untuk membuka gerbang dalam keadaan darurat.
+
+[x] Command Polling: Mekanisme komunikasi ESP32-Server yang lebih stabil.
+
+7. System Requirements
+
+7.1. Hardware
+
+ESP32 Dev Kit V1
+
+IR Obstacle Sensors (x6)
+
+Servo Motor (SG90 / MG995) (x2)
+
+Webcam (HD 720p/1080p)
+
+LCD 16x2 I2C (x2)
+
+Push Buttons (x2)
+
+7.2. Software
+
+Python 3.11 (Opencv-python, Requests)
+
+Google Vision API (Cloud OCR)
+
+PHP/Laravel Framework (Backend API & Web)
+
+MySQL / MariaDB (Database)
+
+Arduino IDE (ESP32 Firmware Development)
+
+8. Conclusion
+
+Spesifikasi ini telah menyatukan seluruh komponen teknis proyek Sistem Smart Parking berbasis IoT. Arsitektur yang dibangun memastikan konsistensi dengan referensi ilmiah (PDF) sekaligus menerapkan praktik pengembangan modern (MVC Laravel & IoT Polling) untuk stabilitas sistem yang optimal.

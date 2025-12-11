@@ -1,135 +1,236 @@
-// ESP32 (Arduino) - Complete implementation for OV7670 camera to capture and send images to Python ANPR server
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include "esp_camera.h"  // Include the camera library
+#include <ArduinoJson.h>
+#include <ESP32Servo.h>
+#include <LiquidCrystal_I2C.h>
 
-// WiFi credentials
-const char* ssid = "YOUR_SSID";
-const char* password = "YOUR_PASS";
+// --- KONFIGURASI WIFI & SERVER ---
+#define WIFI_SSID "Raflii"
+#define WIFI_PASS "77777777"
+#define API_BASE "http://10.218.100.27:8000/api"
 
-// Python ANPR server URL (update with your actual server IP)
-const char* serverUrl = "http://192.168.1.100:5000/process_image"; // Changed endpoint to match Python server
+// --- PIN DEFINITIONS ---
+// 1. Sensor IR Slot (4 Buah)
+#define IR_SLOT1 34 
+#define IR_SLOT2 35
+#define IR_SLOT3 32
+#define IR_SLOT4 33
 
-// Camera pin definitions for ESP32-CAM or custom board
-#define PWDN_GPIO_NUM     -1
-#define RESET_GPIO_NUM    -1
-#define XCLK_GPIO_NUM     21
-#define SIOD_GPIO_NUM     26
-#define SIOC_GPIO_NUM     27
+// 2. Sensor IR Gerbang (2 Buah)
+#define IR_ENTRY_GATE 25 // Deteksi mobil mau masuk
+#define IR_EXIT_GATE  26 // Deteksi mobil mau keluar
 
-#define Y9_GPIO_NUM       35
-#define Y8_GPIO_NUM       34
-#define Y7_GPIO_NUM       39
-#define Y6_GPIO_NUM       36
-#define Y5_GPIO_NUM       19
-#define Y4_GPIO_NUM       18
-#define Y3_GPIO_NUM        5
-#define Y2_GPIO_NUM        4
-#define VSYNC_GPIO_NUM    25
-#define HREF_GPIO_NUM     23
-#define PCLK_GPIO_NUM     22
+// 3. Tombol Manual (2 Buah) - Gunakan PullUp Internal (Connect ke GND saat ditekan)
+#define BTN_MANUAL_IN  27
+#define BTN_MANUAL_OUT 14
+
+// 4. Servo (Gerbang)
+#define SERVO_ENTER_PIN 18
+#define SERVO_EXIT_PIN  19
+
+// 5. LCD I2C (SDA=21, SCL=22)
+// PENTING: Pastikan LCD kedua alamatnya beda (misal 0x26 atau 0x3F)
+// Jika alamat sama, tulisan akan bentrok/tampil di kedua layar.
+LiquidCrystal_I2C lcdEnter(0x27, 16, 2); // LCD Pintu Masuk
+LiquidCrystal_I2C lcdExit(0x3F, 16, 2);  // LCD Pintu Keluar (Ganti 0x3F jika perlu)
+
+// --- OBJEK & VARIABEL ---
+Servo gateEnter;
+Servo gateExit;
+
+// Status Sensor Slot
+int lastState1 = HIGH;
+int lastState2 = HIGH;
+int lastState3 = HIGH;
+int lastState4 = HIGH;
+
+// Timer Polling
+unsigned long lastPollTime = 0;
+const long pollInterval = 1000; 
 
 void setup() {
   Serial.begin(115200);
 
-  // Connect to WiFi
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting WiFi");
+  // 1. Setup Input (Sensor & Tombol)
+  pinMode(IR_SLOT1, INPUT);
+  pinMode(IR_SLOT2, INPUT);
+  pinMode(IR_SLOT3, INPUT);
+  pinMode(IR_SLOT4, INPUT);
+  pinMode(IR_ENTRY_GATE, INPUT);
+  pinMode(IR_EXIT_GATE, INPUT);
+  
+  // Tombol pakai INPUT_PULLUP biar gak butuh resistor tambahan
+  pinMode(BTN_MANUAL_IN, INPUT_PULLUP);
+  pinMode(BTN_MANUAL_OUT, INPUT_PULLUP);
+
+  // 2. Setup Servo
+  gateEnter.attach(SERVO_ENTER_PIN);
+  gateExit.attach(SERVO_EXIT_PIN);
+  gateEnter.write(0); // Tutup (0 Derajat)
+  gateExit.write(0);  // Tutup (0 Derajat)
+
+  // 3. Setup LCD
+  // LCD Masuk
+  lcdEnter.init();
+  lcdEnter.backlight();
+  lcdEnter.setCursor(0, 0);
+  lcdEnter.print("System Starting");
+  
+  // LCD Keluar
+  lcdExit.init();
+  lcdExit.backlight();
+  lcdExit.setCursor(0, 0);
+  lcdExit.print("Please Wait...");
+
+  // 4. Konek WiFi
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.print("Connecting");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nConnected to WiFi!");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-
-  // Camera configuration
-  camera_config_t config;
-  config.ledc_channel = LEDC_CHANNEL_0;
-  config.ledc_timer = LEDC_TIMER_0;
-  config.pin_d0 = Y2_GPIO_NUM;
-  config.pin_d1 = Y3_GPIO_NUM;
-  config.pin_d2 = Y4_GPIO_NUM;
-  config.pin_d3 = Y5_GPIO_NUM;
-  config.pin_d4 = Y6_GPIO_NUM;
-  config.pin_d5 = Y7_GPIO_NUM;
-  config.pin_d6 = Y8_GPIO_NUM;
-  config.pin_d7 = Y9_GPIO_NUM;
-  config.pin_xclk = XCLK_GPIO_NUM;
-  config.pin_pclk = PCLK_GPIO_NUM;
-  config.pin_vsync = VSYNC_GPIO_NUM;
-  config.pin_href = HREF_GPIO_NUM;
-  config.pin_sscb_sda = SIOD_GPIO_NUM;
-  config.pin_sscb_scl = SIOC_GPIO_NUM;
-  config.pin_pwdn = PWDN_GPIO_NUM;
-  config.pin_reset = RESET_GPIO_NUM;
-  config.xclk_freq_hz = 20000000; // 20MHz
-  config.pixel_format = PIXFORMAT_JPEG; // Use JPEG to reduce data size
-
-  // Frame settings
-  if(psramFound()){
-    config.frame_size = FRAMESIZE_UXGA; // UXGA (1600x1200) for better ANPR accuracy
-    config.jpeg_quality = 10; // Lower number = higher quality
-    config.fb_count = 2;
-  } else {
-    config.frame_size = FRAMESIZE_SVGA; // SVGA (800x600) if PSRAM not available
-    config.jpeg_quality = 12;
-    config.fb_count = 1;
-  }
-
-  // Initialize the camera
-  esp_err_t err = esp_camera_init(&config);
-  if (err != ESP_OK) {
-    Serial.printf("Camera initialization failed with error 0x%x", err);
-    return;
-  }
-
-  Serial.println("Camera initialized successfully!");
+  Serial.println("\nWiFi OK!");
+  
+  lcdEnter.clear();
+  lcdEnter.print("WiFi Connected");
+  delay(1000);
+  updateSlotLCD(); // Tampilkan info slot awal
 }
 
 void loop() {
-  // Capture frame from camera
-  camera_fb_t * fb = esp_camera_fb_get();
-  if (!fb) {
-    Serial.println("Camera capture failed");
-    delay(1000);
-    return;
+  // A. Logic Tombol Manual (Prioritas Tertinggi)
+  if (digitalRead(BTN_MANUAL_IN) == LOW) { // LOW artinya ditekan
+    Serial.println("Manual Button: OPEN IN");
+    lcdEnter.setCursor(0, 1);
+    lcdEnter.print("Manual Open   ");
+    openGate(gateEnter);
+    updateSlotLCD(); // Balikin tampilan normal
   }
 
-  Serial.printf("Captured image: %dx%d, size: %d bytes\n", fb->width, fb->height, fb->len);
+  if (digitalRead(BTN_MANUAL_OUT) == LOW) {
+    Serial.println("Manual Button: OPEN OUT");
+    lcdExit.setCursor(0, 1);
+    lcdExit.print("Manual Open   ");
+    openGate(gateExit);
+    lcdExit.setCursor(0, 1);
+    lcdExit.print("              "); // Clear baris bawah
+  }
 
-  // Send via HTTP POST to Python ANPR server
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
+  // B. Cek Sensor Parkir (Real-time)
+  checkSlot(IR_SLOT1, "Slot 1", lastState1);
+  checkSlot(IR_SLOT2, "Slot 2", lastState2);
+  checkSlot(IR_SLOT3, "Slot 3", lastState3);
+  checkSlot(IR_SLOT4, "Slot 4", lastState4);
 
-    // Set the server URL
-    http.begin(serverUrl);
-    http.addHeader("Content-Type", "image/jpeg");
-    http.addHeader("Content-Length", String(fb->len));
+  // C. Polling Perintah dari Server
+  if (millis() - lastPollTime >= pollInterval) {
+    getCommandFromLaravel();
+    lastPollTime = millis();
+  }
+  
+  delay(50); 
+}
 
-    // Send the image data
-    int httpResponseCode = http.POST((uint8_t*)fb->buf, fb->len);
+// --- FUNGSI 1: Cek Sensor & Lapor ---
+void checkSlot(int pin, String slotName, int &lastState) {
+  int currentState = digitalRead(pin);
 
-    if (httpResponseCode > 0) {
-      String response = http.getString();
-      Serial.printf("HTTP Response code: %d\n", httpResponseCode);
-      Serial.println("Server response: " + response);
-
-      // Parse the JSON response to get the license plate
-      if (httpResponseCode == 200) {
-        Serial.println("ANPR processed successfully");
-      }
+  if (currentState != lastState) {
+    String eventType;
+    if (currentState == LOW) {
+      eventType = "ARRIVAL";
     } else {
-      Serial.printf("Error sending POST: %s\n", http.errorToString(httpResponseCode).c_str());
+      eventType = "DEPARTURE";
     }
 
-    http.end();
-  } else {
-    Serial.println("WiFi not connected");
+    sendEventToLaravel(slotName, eventType);
+    updateSlotLCD(); // Update angka slot di LCD Masuk
+    lastState = currentState;
   }
+}
 
-  // Return the frame buffer back to the driver for reuse
-  esp_camera_fb_return(fb);
+// --- FUNGSI 2: Kirim Data ---
+void sendEventToLaravel(String slotName, String eventType) {
+  if(WiFi.status() == WL_CONNECTED){
+    HTTPClient http;
+    http.begin(String(API_BASE) + "/iot-event");
+    http.addHeader("Content-Type", "application/json");
 
-  delay(3000); // Capture and send every 3 seconds
+    StaticJsonDocument<200> doc;
+    doc["slot_name"] = slotName; 
+    doc["event_type"] = eventType;
+    
+    String requestBody;
+    serializeJson(doc, requestBody);
+    http.POST(requestBody);
+    http.end();
+  }
+}
+
+// --- FUNGSI 3: Ambil Perintah ---
+void getCommandFromLaravel() {
+  if(WiFi.status() == WL_CONNECTED){
+    HTTPClient http;
+    http.begin(String(API_BASE) + "/get-command"); 
+    
+    int httpCode = http.GET();
+    if (httpCode > 0) {
+      String payload = http.getString();
+      StaticJsonDocument<200> doc;
+      deserializeJson(doc, payload);
+      
+      String cmd = doc["command"].as<String>();
+      
+      // Cek apakah ada data tagihan (Bill) di JSON?
+      // Misal format JSON: {"command": "OPEN_GATE_EXIT", "bill": "Rp 5000"}
+      // Perlu update Controller Laravel buat kirim "bill" juga kalau mau tampil
+      
+      if (cmd == "OPEN_GATE_ENTER") {
+        lcdEnter.setCursor(0, 1);
+        lcdEnter.print("Welcome!      ");
+        openGate(gateEnter);
+        updateSlotLCD(); // Balik ke tampilan slot
+      } 
+      else if (cmd == "OPEN_GATE_EXIT") {
+        // Tampilkan Bill (Simulasi atau Ambil dari JSON jika ada)
+        lcdExit.clear();
+        lcdExit.print("Goodbye!");
+        lcdExit.setCursor(0, 1);
+        
+        // Kalau controller kirim bill, tampilkan. Kalau tidak, pesan standar.
+        if (doc.containsKey("bill")) {
+           String billAmount = doc["bill"].as<String>();
+           lcdExit.print("Bill: " + billAmount);
+        } else {
+           lcdExit.print("Safe Trip!");
+        }
+        
+        openGate(gateExit);
+        lcdExit.clear(); // Bersihkan setelah mobil lewat
+      }
+    }
+    http.end();
+  }
+}
+
+// --- FUNGSI 4: Gerakkan Servo (90 Derajat) ---
+void openGate(Servo &servo) {
+  servo.write(90); // BUKA (90 Derajat)
+  delay(5000);     // Tahan 5 detik
+  servo.write(0);  // TUTUP (0 Derajat)
+}
+
+// --- FUNGSI 5: LCD Masuk (Info Slot) ---
+void updateSlotLCD() {
+  int freeSlots = 0;
+  // Sensor IR: HIGH = Kosong (Tidak ada pantulan), LOW = Ada Mobil
+  if (digitalRead(IR_SLOT1) == HIGH) freeSlots++;
+  if (digitalRead(IR_SLOT2) == HIGH) freeSlots++;
+  if (digitalRead(IR_SLOT3) == HIGH) freeSlots++;
+  if (digitalRead(IR_SLOT4) == HIGH) freeSlots++;
+
+  lcdEnter.setCursor(0, 0);
+  lcdEnter.print("PARKING INFO    "); 
+  lcdEnter.setCursor(0, 1);
+  lcdEnter.print("Empty Slots: " + String(freeSlots) + "/4 ");
 }
