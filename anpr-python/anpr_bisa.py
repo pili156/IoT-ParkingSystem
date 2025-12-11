@@ -14,11 +14,34 @@ def setup_models():
     """Initialize YOLO model and PaddleOCR"""
     # Load YOLO model
     logger.info("Loading YOLO model...")
-    yolo_model = YOLO('best.pt')
+    yolo_model = YOLO('kertas.pt')
 
     # Initialize PaddleOCR - using both detection and recognition models for better accuracy
     logger.info("Initializing PaddleOCR...")
-    ocr_model = PaddleOCR(use_angle_cls=True, lang='en', show_log=False, det=True, rec=True)
+    # For custom recognition model, PaddleOCR uses different parameter names
+    # If using a custom model, it should be properly converted to PaddleOCR format
+    try:
+        # Try to initialize with custom model
+        ocr_model = PaddleOCR(
+            rec_model_dir='kertas/',  # Directory containing converted model files
+            use_angle_cls=True, 
+            lang='en', 
+            show_log=False, 
+            det=True, 
+            rec=True
+        )
+        logger.info("Custom PaddleOCR model loaded successfully")
+    except Exception as e:
+        logger.warning(f"Could not load custom model, using default: {e}")
+        # Fallback to default model
+        ocr_model = PaddleOCR(
+            use_angle_cls=True, 
+            lang='en', 
+            show_log=False, 
+            det=True, 
+            rec=True
+        )
+        logger.info("Default PaddleOCR model loaded")
 
     return yolo_model, ocr_model
 
