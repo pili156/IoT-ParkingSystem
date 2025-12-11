@@ -1,501 +1,237 @@
-/*
- * ESP32 IoT Parking System - Complete Implementation
- * Updated to include dual gates, 6 IR sensors, dual LCDs, and manual override
- */
-
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <ESP32Servo.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
-// Include your configuration
-#include "api_config.h"
+// --- KONFIGURASI WIFI & SERVER ---
+#define WIFI_SSID "Raflii"
+#define WIFI_PASS "77777777"
+#define API_BASE "http://10.218.100.27:8000/api"
 
-// Pin definitions
-#define GATE_ENTRY_SERVO_PIN 5
-#define GATE_EXIT_SERVO_PIN 18
-#define LCD_ENTRY_SDA 21
-#define LCD_ENTRY_SCL 22
-#define LCD_EXIT_SDA 19  // Using different pins for second LCD
-#define LCD_EXIT_SCL 23  // Using different pins for second LCD
+// --- PIN DEFINITIONS ---
+// 1. Sensor IR Slot (4 Buah)
+#define IR_SLOT1 34  // LOW when occupied, HIGH when empty
+#define IR_SLOT2 35
+#define IR_SLOT3 32
+#define IR_SLOT4 33
 
-// IR Sensor Pins (6 sensors)
-#define IR_SLOT_1_PIN 2
-#define IR_SLOT_2_PIN 4
-#define IR_SLOT_3_PIN 12
-#define IR_SLOT_4_PIN 13
-#define IR_GATE_ENTRY_PIN 14
-#define IR_GATE_EXIT_PIN 15
+// 2. Sensor IR Gerbang (2 Buah)
+#define IR_ENTRY_GATE 25 // Deteksi mobil mau masuk
+#define IR_EXIT_GATE  26 // Deteksi mobil mau keluar
 
-// Manual Override Buttons
-#define MANUAL_ENTRY_BUTTON_PIN 25
-#define MANUAL_EXIT_BUTTON_PIN 26
+// 3. Tombol Manual (2 Buah) - Gunakan PullUp Internal (Connect ke GND saat ditekan)
+#define BTN_MANUAL_IN  27
+#define BTN_MANUAL_OUT 14
 
-// Servo control
-#include <ESP32Servo.h>
-Servo entryServo;
-Servo exitServo;
+// 4. Servo (Gerbang)
+#define SERVO_ENTER_PIN 18
+#define SERVO_EXIT_PIN  19
 
-// LCD displays
-LiquidCrystal_I2C lcdEntry(0x27, 16, 2); // Address might vary
-LiquidCrystal_I2C lcdExit(0x26, 16, 2);  // Different address for second LCD
+// 5. LCD I2C (SDA=21, SCL=22)
+// Both LCDs on same I2C bus with different addresses
+LiquidCrystal_I2C lcdEnter(0x26, 16, 2); // LCD Pintu Masuk (Displays slot info)
+LiquidCrystal_I2C lcdExit(0x27, 16, 2);  // LCD Pintu Keluar (Displays bill info)
 
-// WiFi and HTTP client
-WiFiClient wifiClient;
-HTTPClient http;
+// --- OBJEK & VARIABEL ---
+Servo gateEnter;
+Servo gateExit;
 
-// Device ID for this ESP32 unit
-const char* DEVICE_ID = "ESP32_PARKING_GATE_001";
+// Status Sensor Slot
+int lastState1 = HIGH;
+int lastState2 = HIGH;
+int lastState3 = HIGH;
+int lastState4 = HIGH;
 
-// State variables
-int slotStatus[4]; // Status of 4 parking slots
-int gateEntryTrigger = 0;
-int gateExitTrigger = 0;
-int availableSlots = 4; // Assuming 4 total slots initially
-
-// Function prototypes
-bool connectToWiFi();
-bool sendIoTEvent(const char* eventType, const char* slotName);
-bool checkForCommands();
-bool sendToLcd(int lcdId, const char* message);
-String formatJsonRequest(const char* eventType, const char* slotName);
-String formatJsonCommandRequest(int commandId, String result);
+// Timer Polling
+unsigned long lastPollTime = 0;
+const long pollInterval = 1000;
 
 void setup() {
   Serial.begin(115200);
-  
-  // Initialize servo library
-  ESP32Servo::allocateTimer(0);
-  ESP32Servo::allocateTimer(1);
-  
-  // Attach servos
-  entryServo.setPeriodHertz(50);
-  entryServo.attach(GATE_ENTRY_SERVO_PIN, 500, 2400);
-  exitServo.setPeriodHertz(50);
-  exitServo.attach(GATE_EXIT_SERVO_PIN, 500, 2400);
-  
-  // Set servos to closed position (90 degrees)
-  entryServo.write(90);
-  exitServo.write(90);
-  
-  // Initialize IR sensors
-  pinMode(IR_SLOT_1_PIN, INPUT);
-  pinMode(IR_SLOT_2_PIN, INPUT);
-  pinMode(IR_SLOT_3_PIN, INPUT);
-  pinMode(IR_SLOT_4_PIN, INPUT);
-  pinMode(IR_GATE_ENTRY_PIN, INPUT);
-  pinMode(IR_GATE_EXIT_PIN, INPUT);
-  
-  // Initialize manual override buttons
-  pinMode(MANUAL_ENTRY_BUTTON_PIN, INPUT_PULLUP);
-  pinMode(MANUAL_EXIT_BUTTON_PIN, INPUT_PULLUP);
-  
-  // Initialize LCDs
-  Wire.begin();
-  initLCDs();
-  
-  // Connect to WiFi
-  if (!connectToWiFi()) {
-    Serial.println("Failed to connect to WiFi");
-    return;
-  }
-  
-  Serial.println("ESP32 Parking System Started");
-  Serial.println("Connected to WiFi");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-  
-  updateSlotDisplay();
-}
 
-void loop() {
-  // Read IR sensor states
-  readSensors();
-  
-  // Check for vehicle entry trigger
-  if (gateEntryTrigger) {
-    if (availableSlots > 0) {
-      // Send entry event
-      if (sendIoTEvent("ARRIVAL", "GateEntry")) {
-        Serial.println("Entry event sent successfully");
-      } else {
-        Serial.println("Failed to send entry event");
-      }
-      gateEntryTrigger = 0; // Reset trigger
-    } else {
-      Serial.println("No available slots, vehicle entry denied");
-      showOnLCD(0, "Parkir Penuh!");
-    }
-  }
-  
-  // Check for vehicle exit trigger
-  if (gateExitTrigger) {
-    // Send exit event
-    if (sendIoTEvent("DEPARTURE", "GateExit")) {
-      Serial.println("Exit event sent successfully");
-    } else {
-      Serial.println("Failed to send exit event");
-    }
-    gateExitTrigger = 0; // Reset trigger
-  }
-  
-  // Check for commands from server
-  if (checkForCommands()) {
-    Serial.println("Command processed");
-  }
-  
-  // Handle manual override buttons
-  handleManualOverride();
-  
-  delay(1000); // Check every second
-}
+  // 1. Setup Input (Sensor & Tombol)
+  pinMode(IR_SLOT1, INPUT);
+  pinMode(IR_SLOT2, INPUT);
+  pinMode(IR_SLOT3, INPUT);
+  pinMode(IR_SLOT4, INPUT);
+  pinMode(IR_ENTRY_GATE, INPUT);
+  pinMode(IR_EXIT_GATE, INPUT);
 
-// Initialize both LCD displays
-void initLCDs() {
-  // Initialize first LCD (entry)
-  lcdEntry.init();
-  lcdEntry.backlight();
-  lcdEntry.setCursor(0, 0);
-  lcdEntry.print("Welcome!");
-  
-  // Initialize second LCD (exit) - may need different address or I2C bus
-  Wire.begin(19, 23); // Reinitialize for second LCD if using different pins
+  // Tombol pakai INPUT_PULLUP biar gak butuh resistor tambahan
+  pinMode(BTN_MANUAL_IN, INPUT_PULLUP);
+  pinMode(BTN_MANUAL_OUT, INPUT_PULLUP);
+
+  // 2. Initialize I2C bus (Single bus for both LCDs)
+  Wire.begin(21, 22); // SDA=21, SCL=22
+
+  // 3. Setup LCD
+  // LCD Masuk (0x26)
+  lcdEnter.init();
+  lcdEnter.backlight();
+  lcdEnter.setCursor(0, 0);
+  lcdEnter.print("System Starting");
+
+  // LCD Keluar (0x27)
   lcdExit.init();
   lcdExit.backlight();
   lcdExit.setCursor(0, 0);
-  lcdExit.print("Exit Gate");
-}
+  lcdExit.print("Please Wait...");
 
-// Send message to specific LCD
-bool sendToLcd(int lcdId, const char* message) {
-  if (lcdId == 0) { // Entry LCD
-    lcdEntry.clear();
-    lcdEntry.setCursor(0, 0);
-    lcdEntry.print(message);
-  } else if (lcdId == 1) { // Exit LCD
-    lcdExit.clear();
-    lcdExit.setCursor(0, 0);
-    lcdExit.print(message);
-  }
-  return true;
-}
+  // 4. Setup Servo
+  gateEnter.attach(SERVO_ENTER_PIN);
+  gateExit.attach(SERVO_EXIT_PIN);
+  gateEnter.write(0); // Tutup (0 Derajat)
+  gateExit.write(0);  // Tutup (0 Derajat)
 
-// Show message on LCDs
-void showOnLCD(int lcdId, const char* message) {
-  sendToLcd(lcdId, message);
-}
-
-// Update slot display on entry LCD
-void updateSlotDisplay() {
-  char displayMsg[20];
-  sprintf(displayMsg, "Slot: %d", availableSlots);
-  showOnLCD(0, displayMsg);
-}
-
-// Read all sensor states
-void readSensors() {
-  // Read parking slot sensors
-  int newSlot1 = !digitalRead(IR_SLOT_1_PIN); // Inverted logic (HIGH = not blocked)
-  int newSlot2 = !digitalRead(IR_SLOT_2_PIN);
-  int newSlot3 = !digitalRead(IR_SLOT_3_PIN);
-  int newSlot4 = !digitalRead(IR_SLOT_4_PIN);
-  
-  // Calculate available slots
-  int newAvailable = 4; // Start with all available
-  if (newSlot1) newAvailable--;
-  if (newSlot2) newAvailable--;
-  if (newSlot3) newAvailable--;
-  if (newSlot4) newAvailable--;
-  
-  // Check for changes in slot status
-  if (newSlot1 != slotStatus[0]) {
-    slotStatus[0] = newSlot1;
-    // Send update to server
-    sendIoTEvent(newSlot1 ? "ARRIVAL" : "DEPARTURE", "Slot_1");
-  }
-  
-  if (newSlot2 != slotStatus[1]) {
-    slotStatus[1] = newSlot2;
-    sendIoTEvent(newSlot2 ? "ARRIVAL" : "DEPARTURE", "Slot_2");
-  }
-  
-  if (newSlot3 != slotStatus[2]) {
-    slotStatus[2] = newSlot3;
-    sendIoTEvent(newSlot3 ? "ARRIVAL" : "DEPARTURE", "Slot_3");
-  }
-  
-  if (newSlot4 != slotStatus[3]) {
-    slotStatus[3] = newSlot4;
-    sendIoTEvent(newSlot4 ? "ARRIVAL" : "DEPARTURE", "Slot_4");
-  }
-  
-  // Update available slots count and display
-  if (newAvailable != availableSlots) {
-    availableSlots = newAvailable;
-    updateSlotDisplay();
-  }
-  
-  // Read gate sensors
-  int newGateEntry = !digitalRead(IR_GATE_ENTRY_PIN);
-  int newGateExit = !digitalRead(IR_GATE_EXIT_PIN);
-  
-  // Set trigger flags
-  if (newGateEntry && !gateEntryTrigger) gateEntryTrigger = 1;
-  if (newGateExit && !gateExitTrigger) gateExitTrigger = 1;
-}
-
-// Handle manual override buttons
-void handleManualOverride() {
-  // Manual entry gate override
-  if (!digitalRead(MANUAL_ENTRY_BUTTON_PIN)) {
-    Serial.println("Manual entry gate override");
-    entryServo.write(0); // Open gate
-    delay(3000); // Keep open for 3 seconds
-    entryServo.write(90); // Close gate
-    delay(100); // Debounce
-  }
-  
-  // Manual exit gate override
-  if (!digitalRead(MANUAL_EXIT_BUTTON_PIN)) {
-    Serial.println("Manual exit gate override");
-    exitServo.write(0); // Open gate
-    delay(3000); // Keep open for 3 seconds
-    exitServo.write(90); // Close gate
-    delay(100); // Debounce
-  }
-}
-
-// Connect to WiFi with credentials from config
-bool connectToWiFi() {
+  // 5. Konek WiFi
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+  Serial.print("Connecting");
+  while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
-    attempts++;
   }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    return true;
-  }
-  
-  return false;
+  Serial.println("\nWiFi OK!");
+
+  lcdEnter.clear();
+  lcdEnter.print("WiFi Connected");
+  delay(1000);
+  updateSlotLCD(); // Tampilkan info slot awal
 }
 
-// Send IoT event to Laravel API
-bool sendIoTEvent(const char* eventType, const char* slotName) {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi not connected");
-    return false;
+void loop() {
+  // A. Logic Tombol Manual (Prioritas Tertinggi)
+  if (digitalRead(BTN_MANUAL_IN) == LOW) { // LOW artinya ditekan
+    Serial.println("Manual Button: OPEN IN");
+    lcdEnter.setCursor(0, 1);
+    lcdEnter.print("Manual Open   ");
+    openGate(gateEnter);
+    updateSlotLCD(); // Balikin tampilan normal
+    delay(200); // Debounce
   }
-  
-  http.begin(wifiClient, API_IOT_EVENT_ENDPOINT);
-  
-  // Set headers
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Accept", "application/json");
-  http.addHeader("Authorization", AUTH_HEADER);
-  
-  // Create JSON payload
-  String payload = formatJsonRequest(eventType, slotName);
-  
-  // Send POST request
-  int httpResponseCode = http.POST(payload);
-  
-  if (httpResponseCode > 0) {
-    String response = http.getString();
-    Serial.print("HTTP Response code: ");
-    Serial.println(httpResponseCode);
-    Serial.print("Response: ");
-    Serial.println(response);
-    
-    // Parse response to check if successful
-    DynamicJsonDocument doc(512);
-    DeserializationError error = deserializeJson(doc, response);
-    
-    if (error) {
-      Serial.print("JSON Deserialization failed: ");
-      Serial.println(error.c_str());
-      return false;
-    }
-    
-    bool success = doc["success"];
-    if (success) {
-      Serial.println("IoT event sent successfully");
-      return true;
+
+  if (digitalRead(BTN_MANUAL_OUT) == LOW) {
+    Serial.println("Manual Button: OPEN OUT");
+    lcdExit.setCursor(0, 1);
+    lcdExit.print("Manual Open   ");
+    openGate(gateExit);
+    lcdExit.setCursor(0, 1);
+    lcdExit.print("              "); // Clear baris bawah
+    delay(200); // Debounce
+  }
+
+  // B. Cek Sensor Parkir (Real-time)
+  checkSlot(IR_SLOT1, "Slot 1", lastState1);
+  checkSlot(IR_SLOT2, "Slot 2", lastState2);
+  checkSlot(IR_SLOT3, "Slot 3", lastState3);
+  checkSlot(IR_SLOT4, "Slot 4", lastState4);
+
+  // C. Polling Perintah dari Server
+  if (millis() - lastPollTime >= pollInterval) {
+    getCommandFromLaravel();
+    lastPollTime = millis();
+  }
+
+  delay(50);
+}
+
+// --- FUNGSI 1: Cek Sensor & Lapor ---
+void checkSlot(int pin, String slotName, int &lastState) {
+  int currentState = digitalRead(pin);
+
+  if (currentState != lastState) {
+    String eventType;
+    if (currentState == LOW) {
+      eventType = "ARRIVAL"; // LOW means car has arrived
     } else {
-      Serial.println("Server returned error in response");
-      return false;
+      eventType = "DEPARTURE"; // HIGH means car has departed
     }
-  } else {
-    Serial.print("Error sending HTTP request: ");
-    Serial.println(httpResponseCode);
-    return false;
+
+    sendEventToLaravel(slotName, eventType);
+    updateSlotLCD(); // Update angka slot di LCD Masuk
+    lastState = currentState;
   }
-  
-  http.end();
 }
 
-// Check for commands from Laravel API
-bool checkForCommands() {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi not connected");
-    return false;
+// --- FUNGSI 2: Kirim Data ---
+void sendEventToLaravel(String slotName, String eventType) {
+  if(WiFi.status() == WL_CONNECTED){
+    HTTPClient http;
+    http.begin(String(API_BASE) + "/iot-event");
+    http.addHeader("Content-Type", "application/json");
+
+    StaticJsonDocument<200> doc;
+    doc["slot_name"] = slotName;
+    doc["event_type"] = eventType;
+
+    String requestBody;
+    serializeJson(doc, requestBody);
+    http.POST(requestBody);
+    http.end();
   }
-  
-  // Format URL with device_id parameter
-  String commandUrl = String(API_IOT_COMMAND_ENDPOINT) + "?device_id=" + DEVICE_ID;
-  
-  http.begin(wifiClient, commandUrl.c_str());
-  
-  // Set headers
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Accept", "application/json");
-  http.addHeader("Authorization", AUTH_HEADER);
-  
-  // Send GET request
-  int httpResponseCode = http.GET();
-  
-  if (httpResponseCode > 0) {
-    String response = http.getString();
-    Serial.print("Command HTTP Response code: ");
-    Serial.println(httpResponseCode);
-    Serial.print("Command Response: ");
-    Serial.println(response);
-    
-    // Parse response to check for commands
-    DynamicJsonDocument doc(512);
-    DeserializationError error = deserializeJson(doc, response);
-    
-    if (error) {
-      Serial.print("JSON Deserialization failed: ");
-      Serial.println(error.c_str());
-      return false;
-    }
-    
-    bool success = doc["success"];
-    if (success) {
-      String command = doc["data"]["command"];
-      int commandId = doc["data"]["command_id"];
-      
-      Serial.print("Received command: ");
-      Serial.println(command);
-      
-      if (command == "OPEN_GATE_ENTER") {
-        // Execute entry gate command
-        openGate(0); // 0 for entry gate
-        markCommandAsConsumed(commandId, "executed");
-        return true;
-      } else if (command == "OPEN_GATE_EXIT") {
-        // Execute exit gate command
-        openGate(1); // 1 for exit gate
-        markCommandAsConsumed(commandId, "executed");
-        return true;
-      } else if (command == "WAIT") {
-        Serial.println("No commands to execute");
-        return true;
+}
+
+// --- FUNGSI 3: Ambil Perintah ---
+void getCommandFromLaravel() {
+  if(WiFi.status() == WL_CONNECTED){
+    HTTPClient http;
+    http.begin(String(API_BASE) + "/get-command");
+
+    int httpCode = http.GET();
+    if (httpCode > 0) {
+      String payload = http.getString();
+      StaticJsonDocument<200> doc;
+      deserializeJson(doc, payload);
+
+      String cmd = doc["command"].as<String>();
+
+      if (cmd == "OPEN_GATE_ENTER") {
+        lcdEnter.setCursor(0, 1);
+        lcdEnter.print("Welcome!      ");
+        openGate(gateEnter);
+        updateSlotLCD(); // Balik ke tampilan slot
       }
-    } else {
-      Serial.println("Server returned error in command response");
-      return false;
+      else if (cmd == "OPEN_GATE_EXIT") {
+        // Tampilkan Bill (Simulasi atau Ambil dari JSON jika ada)
+        lcdExit.clear();
+        lcdExit.print("Goodbye!");
+        lcdExit.setCursor(0, 1);
+
+        // Kalau controller kirim bill, tampilkan. Kalau tidak, pesan standar.
+        if (doc.containsKey("bill")) {
+           String billAmount = doc["bill"].as<String>();
+           lcdExit.print("Bill: " + billAmount);
+        } else {
+           lcdExit.print("Safe Trip!");
+        }
+
+        openGate(gateExit);
+        lcdExit.clear(); // Bersihkan setelah mobil lewat
+      }
     }
-  } else {
-    Serial.print("Error getting commands: ");
-    Serial.println(httpResponseCode);
-    return false;
-  }
-  
-  http.end();
-  return false;
-}
-
-// Open the appropriate gate
-void openGate(int gateId) {
-  Serial.print("Opening gate: ");
-  Serial.println(gateId == 0 ? "ENTRY" : "EXIT");
-  
-  if (gateId == 0) { // Entry gate
-    entryServo.write(0); // Open gate
-    delay(3000); // Keep open for 3 seconds
-    entryServo.write(90); // Close gate
-    showOnLCD(0, "Selamat Datang!");
-    delay(2000);
-    updateSlotDisplay(); // Update slot info after vehicle entry
-  } else { // Exit gate
-    exitServo.write(0); // Open gate
-    delay(3000); // Keep open for 3 seconds
-    exitServo.write(90); // Close gate
-    showOnLCD(1, "Terima Kasih!");
-    delay(2000);
-    lcdExit.clear();
-    lcdExit.setCursor(0, 0);
-    lcdExit.print("Exit Gate");
+    http.end();
   }
 }
 
-// Mark command as consumed
-bool markCommandAsConsumed(int commandId, String result) {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi not connected");
-    return false;
-  }
-  
-  http.begin(wifiClient, API_BASE "/iot/command/consume");
-  
-  // Set headers
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Accept", "application/json");
-  http.addHeader("Authorization", AUTH_HEADER);
-  
-  // Create JSON payload for consuming command
-  String payload = formatJsonCommandRequest(commandId, result);
-  
-  // Send POST request to consume command
-  int httpResponseCode = http.POST(payload);
-  
-  if (httpResponseCode > 0) {
-    String response = http.getString();
-    Serial.print("Consume Command HTTP Response code: ");
-    Serial.println(httpResponseCode);
-    Serial.print("Response: ");
-    Serial.println(response);
-    
-    return true;
-  } else {
-    Serial.print("Error consuming command: ");
-    Serial.println(httpResponseCode);
-    return false;
-  }
-  
-  http.end();
+// --- FUNGSI 4: Gerakkan Servo (90 Derajat) ---
+void openGate(Servo &servo) {
+  servo.write(90); // BUKA (90 Derajat)
+  delay(3000);     // Tahan 3 detik
+  servo.write(0);  // TUTUP (0 Derajat)
 }
 
-// Helper function to format JSON request for IoT event
-String formatJsonRequest(const char* eventType, const char* slotName) {
-  DynamicJsonDocument doc(256);
-  
-  doc["event_type"] = eventType;
-  doc["slot_name"] = slotName;
-  doc["device_id"] = DEVICE_ID;
-  
-  String jsonString;
-  serializeJson(doc, jsonString);
-  
-  return jsonString;
-}
+// --- FUNGSI 5: LCD Entry (Info Slot) ---
+void updateSlotLCD() {
+  int freeSlots = 0;
+  // Sensor IR: HIGH = Kosong (Tidak ada mobil), LOW = Ada Mobil
+  if (digitalRead(IR_SLOT1) == HIGH) freeSlots++;
+  if (digitalRead(IR_SLOT2) == HIGH) freeSlots++;
+  if (digitalRead(IR_SLOT3) == HIGH) freeSlots++;
+  if (digitalRead(IR_SLOT4) == HIGH) freeSlots++;
 
-// Helper function to format JSON request for consuming command
-String formatJsonCommandRequest(int commandId, String result) {
-  DynamicJsonDocument doc(256);
-  
-  doc["command_id"] = commandId;
-  doc["result"] = result;
-  doc["device_id"] = DEVICE_ID;
-  
-  String jsonString;
-  serializeJson(doc, jsonString);
-  
-  return jsonString;
+  lcdEnter.setCursor(0, 0);
+  lcdEnter.print("PARKING INFO    ");
+  lcdEnter.setCursor(0, 1);
+  lcdEnter.print("Empty Slots: " + String(freeSlots) + "/4 ");
 }
