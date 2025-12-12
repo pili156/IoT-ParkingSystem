@@ -10,7 +10,8 @@ class IncomingCar extends Model
     protected $fillable = [
         'car_no',
         'datetime',
-        'image_path'
+        'image_path',
+        'status'
     ];
 
     protected $casts = [
