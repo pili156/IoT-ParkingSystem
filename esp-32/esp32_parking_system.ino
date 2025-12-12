@@ -1,237 +1,360 @@
+/*
+ * SISTEM PARKIR OTOMATIS - FINAL VERSION + SAFETY INTERLOCK + SMART DISPLAY
+ * * LOGIKA UTAMA:
+ * 1. Masuk (Sat-Set): Servo BUKA DULU -> Baru lapor ke /api/iot-event
+ * 2. Keluar (Sabar): Minta Bill ke /api/iot-event -> Polling ke /api/get-command -> Servo BUKA.
+ * 3. Parkir: Update slot secara Real-time ke /api/iot-event.
+ * * * FITUR TAMBAHAN:
+ * - SAFETY INTERLOCK: Gerbang tidak menutup jika ada mobil di bawahnya.
+ * - SMART FULL SIGN: LCD Masuk menampilkan "PARKIR PENUH!" jika slot 0.
+ * - DETAILED BILLING: LCD Keluar menampilkan Waktu dan Biaya (diambil dari server).
+ */
+
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <ArduinoJson.h>
-#include <ESP32Servo.h>
+#include <ESP32Servo.h> 
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <ArduinoJson.h>
 
-// --- KONFIGURASI WIFI & SERVER ---
-#define WIFI_SSID "Raflii"
-#define WIFI_PASS "77777777"
-#define API_BASE "http://10.218.100.27:8000/api"
+// --- KONFIGURASI JARINGAN ---
+const char* ssid = "Jepri";
+const char* password = "22222222";
 
-// --- PIN DEFINITIONS ---
-// 1. Sensor IR Slot (4 Buah)
-#define IR_SLOT1 34  // LOW when occupied, HIGH when empty
-#define IR_SLOT2 35
-#define IR_SLOT3 32
-#define IR_SLOT4 33
+// BASE URL API LARAVEL
+const char* baseUrl = "http://10.241.6.59:8000/api"; 
 
-// 2. Sensor IR Gerbang (2 Buah)
-#define IR_ENTRY_GATE 25 // Deteksi mobil mau masuk
-#define IR_EXIT_GATE  26 // Deteksi mobil mau keluar
+// --- DEFINISI PIN ---
+#define PIN_SENSOR_SLOT_1 34
+#define PIN_SENSOR_SLOT_2 35
+#define PIN_SENSOR_SLOT_3 32
+#define PIN_SENSOR_SLOT_4 33
 
-// 3. Tombol Manual (2 Buah) - Gunakan PullUp Internal (Connect ke GND saat ditekan)
-#define BTN_MANUAL_IN  27
-#define BTN_MANUAL_OUT 14
+#define PIN_SENSOR_MASUK 25
+#define PIN_SENSOR_KELUAR 26
 
-// 4. Servo (Gerbang)
-#define SERVO_ENTER_PIN 18
-#define SERVO_EXIT_PIN  19
+#define PIN_SERVO_MASUK 18
+#define PIN_SERVO_KELUAR 19
 
-// 5. LCD I2C (SDA=21, SCL=22)
-// Both LCDs on same I2C bus with different addresses
-LiquidCrystal_I2C lcdEnter(0x26, 16, 2); // LCD Pintu Masuk (Displays slot info)
-LiquidCrystal_I2C lcdExit(0x27, 16, 2);  // LCD Pintu Keluar (Displays bill info)
+#define PIN_TOMBOL_MASUK 27
+#define PIN_TOMBOL_KELUAR 14
 
-// --- OBJEK & VARIABEL ---
-Servo gateEnter;
-Servo gateExit;
+// --- OBJEK LCD & SERVO ---
+LiquidCrystal_I2C lcdMasuk(0x26, 16, 2); 
+LiquidCrystal_I2C lcdKeluar(0x27, 16, 2); 
+Servo servoMasuk;
+Servo servoKeluar;
 
-// Status Sensor Slot
-int lastState1 = HIGH;
-int lastState2 = HIGH;
-int lastState3 = HIGH;
-int lastState4 = HIGH;
+// --- VARIABEL GLOBAL ---
+int slotStatus[4] = {HIGH, HIGH, HIGH, HIGH}; 
+int freeSlots = 4;
 
-// Timer Polling
-unsigned long lastPollTime = 0;
-const long pollInterval = 1000;
+// Timer Servo (Non-blocking)
+unsigned long servoMasukTimer = 0;
+unsigned long servoKeluarTimer = 0;
+bool servoMasukAktif = false;
+bool servoKeluarAktif = false;
+const int SERVO_DURATION = 5000; 
+
+// Variabel Pintu Keluar (Billing Polling)
+bool exitRequestActive = false;
+unsigned long lastBillingCheck = 0;
+const int BILLING_CHECK_INTERVAL = 1000; // Cek server tiap 1 detik
+
+// Variabel untuk menyimpan data billing dari server
+String parkingTime = "";
+String parkingCost = "";
 
 void setup() {
   Serial.begin(115200);
 
-  // 1. Setup Input (Sensor & Tombol)
-  pinMode(IR_SLOT1, INPUT);
-  pinMode(IR_SLOT2, INPUT);
-  pinMode(IR_SLOT3, INPUT);
-  pinMode(IR_SLOT4, INPUT);
-  pinMode(IR_ENTRY_GATE, INPUT);
-  pinMode(IR_EXIT_GATE, INPUT);
+  // 1. Setup Input
+  pinMode(PIN_SENSOR_SLOT_1, INPUT);
+  pinMode(PIN_SENSOR_SLOT_2, INPUT);
+  pinMode(PIN_SENSOR_SLOT_3, INPUT);
+  pinMode(PIN_SENSOR_SLOT_4, INPUT);
+  pinMode(PIN_SENSOR_MASUK, INPUT); 
+  pinMode(PIN_SENSOR_KELUAR, INPUT);
+  pinMode(PIN_TOMBOL_MASUK, INPUT_PULLUP);
+  pinMode(PIN_TOMBOL_KELUAR, INPUT_PULLUP);
 
-  // Tombol pakai INPUT_PULLUP biar gak butuh resistor tambahan
-  pinMode(BTN_MANUAL_IN, INPUT_PULLUP);
-  pinMode(BTN_MANUAL_OUT, INPUT_PULLUP);
-
-  // 2. Initialize I2C bus (Single bus for both LCDs)
-  Wire.begin(21, 22); // SDA=21, SCL=22
+  // 2. Setup Servo
+  servoMasuk.attach(PIN_SERVO_MASUK);
+  servoKeluar.attach(PIN_SERVO_KELUAR);
+  servoMasuk.write(0); 
+  servoKeluar.write(0);
 
   // 3. Setup LCD
-  // LCD Masuk (0x26)
-  lcdEnter.init();
-  lcdEnter.backlight();
-  lcdEnter.setCursor(0, 0);
-  lcdEnter.print("System Starting");
+  lcdMasuk.init(); lcdMasuk.backlight();
+  lcdKeluar.init(); lcdKeluar.backlight();
 
-  // LCD Keluar (0x27)
-  lcdExit.init();
-  lcdExit.backlight();
-  lcdExit.setCursor(0, 0);
-  lcdExit.print("Please Wait...");
-
-  // 4. Setup Servo
-  gateEnter.attach(SERVO_ENTER_PIN);
-  gateExit.attach(SERVO_EXIT_PIN);
-  gateEnter.write(0); // Tutup (0 Derajat)
-  gateExit.write(0);  // Tutup (0 Derajat)
-
-  // 5. Konek WiFi
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print("Connecting");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  lcdMasuk.print("System Booting..");
+  
+  // 4. Koneksi WiFi
+  WiFi.begin(ssid, password);
+  int retry = 0;
+  while (WiFi.status() != WL_CONNECTED && retry < 20) {
+    delay(500); Serial.print(".");
+    retry++;
   }
-  Serial.println("\nWiFi OK!");
-
-  lcdEnter.clear();
-  lcdEnter.print("WiFi Connected");
+  
+  lcdMasuk.clear();
+  if(WiFi.status() == WL_CONNECTED){
+    lcdMasuk.print("WiFi Connected");
+    Serial.println("\nWiFi OK!");
+  } else {
+    lcdMasuk.print("WiFi Failed!"); 
+  }
   delay(1000);
-  updateSlotLCD(); // Tampilkan info slot awal
+  
+  updateSlotStatus(true); // Tampilkan slot awal
 }
 
 void loop() {
-  // A. Logic Tombol Manual (Prioritas Tertinggi)
-  if (digitalRead(BTN_MANUAL_IN) == LOW) { // LOW artinya ditekan
-    Serial.println("Manual Button: OPEN IN");
-    lcdEnter.setCursor(0, 1);
-    lcdEnter.print("Manual Open   ");
-    openGate(gateEnter);
-    updateSlotLCD(); // Balikin tampilan normal
-    delay(200); // Debounce
+  // A. Tombol Manual (Darurat)
+  handleManualButtons();
+
+  // B. Pintu Masuk (Langsung Buka)
+  handleEntryGate();
+
+  // C. Pintu Keluar (Nunggu Tagihan)
+  handleExitGate();
+
+  // D. Update Slot Parkir (Termasuk Smart Full Sign)
+  updateSlotStatus(false);
+
+  // E. Timer Servo (Termasuk Safety Interlock)
+  handleServoTimers();
+
+  // F. Reconnect WiFi jika putus
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.reconnect(); 
   }
-
-  if (digitalRead(BTN_MANUAL_OUT) == LOW) {
-    Serial.println("Manual Button: OPEN OUT");
-    lcdExit.setCursor(0, 1);
-    lcdExit.print("Manual Open   ");
-    openGate(gateExit);
-    lcdExit.setCursor(0, 1);
-    lcdExit.print("              "); // Clear baris bawah
-    delay(200); // Debounce
-  }
-
-  // B. Cek Sensor Parkir (Real-time)
-  checkSlot(IR_SLOT1, "Slot 1", lastState1);
-  checkSlot(IR_SLOT2, "Slot 2", lastState2);
-  checkSlot(IR_SLOT3, "Slot 3", lastState3);
-  checkSlot(IR_SLOT4, "Slot 4", lastState4);
-
-  // C. Polling Perintah dari Server
-  if (millis() - lastPollTime >= pollInterval) {
-    getCommandFromLaravel();
-    lastPollTime = millis();
-  }
-
-  delay(50);
 }
 
-// --- FUNGSI 1: Cek Sensor & Lapor ---
-void checkSlot(int pin, String slotName, int &lastState) {
-  int currentState = digitalRead(pin);
+// --- FUNGSI LOGIKA UTAMA (KOMBISASI ONLINE & SAFETY) ---
 
-  if (currentState != lastState) {
-    String eventType;
-    if (currentState == LOW) {
-      eventType = "ARRIVAL"; // LOW means car has arrived
-    } else {
-      eventType = "DEPARTURE"; // HIGH means car has departed
+void handleEntryGate() {
+  // Jika Sensor Masuk Mendeteksi Mobil (LOW)
+  if (digitalRead(PIN_SENSOR_MASUK) == LOW) {
+    if (!servoMasukAktif) { 
+      Serial.println("ENTRY: Mobil Terdeteksi -> Buka Gerbang!");
+      
+      // AKSI CEPAT: Buka Servo Dulu!
+      servoMasuk.write(90);
+      servoMasukAktif = true;
+      servoMasukTimer = millis();
+
+      // LCD sementara saat gerbang buka
+      lcdMasuk.setCursor(0, 1);
+      if(freeSlots > 0) {
+        lcdMasuk.print("Silahkan Masuk  ");
+      } else {
+        lcdMasuk.print("Hati2 (PENUH)   ");
+      }
+
+      // Lapor Server (Belakangan) ke /iot-event
+      sendEventToLaravel("ENTRY", "0"); 
+      
+      delay(1000); // Debounce
     }
-
-    sendEventToLaravel(slotName, eventType);
-    updateSlotLCD(); // Update angka slot di LCD Masuk
-    lastState = currentState;
   }
 }
 
-// --- FUNGSI 2: Kirim Data ---
-void sendEventToLaravel(String slotName, String eventType) {
-  if(WiFi.status() == WL_CONNECTED){
+void handleExitGate() {
+  // 1. Deteksi Mobil Mau Keluar
+  if (digitalRead(PIN_SENSOR_KELUAR) == LOW && !exitRequestActive && !servoKeluarAktif) {
+    Serial.println("EXIT: Mobil Terdeteksi -> Minta Tagihan...");
+    
+    exitRequestActive = true; 
+    
+    lcdKeluar.clear();
+    lcdKeluar.setCursor(0, 0); lcdKeluar.print("Mohon Tunggu...");
+    lcdKeluar.setCursor(0, 1); lcdKeluar.print("Hitung Biaya...");
+
+    // Kirim Request ke /iot-event
+    sendEventToLaravel("EXIT_BILLING_REQUEST", "0");
+    lastBillingCheck = millis();
+  }
+
+  // 2. Polling (Nanya Terus ke Server)
+  if (exitRequestActive) {
+    if (millis() - lastBillingCheck >= BILLING_CHECK_INTERVAL) {
+      // Cek ke /get-command
+      bool dataReceived = checkCommandFromServer(); 
+      
+      if (dataReceived) { // Jika data (time dan cost) sudah diterima
+        Serial.println("EXIT: Tagihan Diterima -> Waktu: " + parkingTime + ", Biaya: " + parkingCost);
+        
+        // --- TAMPILAN BIAYA & WAKTU DI LCD (Diambil dari Server) ---
+        lcdKeluar.clear();
+        lcdKeluar.setCursor(0, 0); lcdKeluar.print("Waktu: " + parkingTime); 
+        lcdKeluar.setCursor(0, 1); lcdKeluar.print("Biaya: " + parkingCost); 
+
+        // Buka Gerbang
+        servoKeluar.write(90);
+        servoKeluarAktif = true;
+        servoKeluarTimer = millis();
+
+        exitRequestActive = false;
+        parkingTime = ""; // Reset variabel
+        parkingCost = ""; // Reset variabel
+      }
+      lastBillingCheck = millis();
+    }
+  }
+}
+
+void updateSlotStatus(bool forceUpdate) {
+  int currentStatus[4];
+  currentStatus[0] = digitalRead(PIN_SENSOR_SLOT_1);
+  currentStatus[1] = digitalRead(PIN_SENSOR_SLOT_2);
+  currentStatus[2] = digitalRead(PIN_SENSOR_SLOT_3);
+  currentStatus[3] = digitalRead(PIN_SENSOR_SLOT_4);
+
+  bool changed = false;
+  int tempFree = 0;
+
+  for(int i=0; i<4; i++){
+    if(slotStatus[i] != currentStatus[i]) changed = true;
+    slotStatus[i] = currentStatus[i];
+    if(slotStatus[i] == HIGH) tempFree++; // Asumsi HIGH = Kosong
+  }
+  freeSlots = tempFree;
+
+  if (changed || forceUpdate) {
+    // --- SMART FULL SIGN LOGIC ---
+    if (!servoMasukAktif) {
+      lcdMasuk.clear(); 
+      if (freeSlots == 0) {
+        lcdMasuk.setCursor(0, 0); lcdMasuk.print("PARKIR PENUH!");
+        lcdMasuk.setCursor(0, 1); lcdMasuk.print("Mohon Maaf...   ");
+      } else {
+        lcdMasuk.setCursor(0, 0); 
+        lcdMasuk.print("Slot: " + String(freeSlots) + "/4 Kosong");
+        lcdMasuk.setCursor(0, 1); 
+        lcdMasuk.print("Tap Kartu/Masuk");
+      }
+    }
+    // Kirim Update Slot ke /iot-event
+    if(changed) sendEventToLaravel("SLOT_UPDATE", String(freeSlots));
+  }
+}
+
+void handleManualButtons() {
+  // Tombol Masuk
+  if (digitalRead(PIN_TOMBOL_MASUK) == LOW) {
+    servoMasuk.write(90);
+    servoMasukAktif = true;
+    servoMasukTimer = millis(); 
+    lcdMasuk.setCursor(0,1); lcdMasuk.print("MANUAL OPEN     ");
+    delay(500);
+  }
+  // Tombol Keluar
+  if (digitalRead(PIN_TOMBOL_KELUAR) == LOW) {
+    servoKeluar.write(90);
+    servoKeluarAktif = true;
+    servoKeluarTimer = millis();
+    lcdKeluar.setCursor(0,1); lcdKeluar.print("MANUAL OPEN     ");
+    delay(500);
+  }
+}
+
+// --- SAFETY INTERLOCK LOGIC ---
+void handleServoTimers() {
+  // 1. Logika Tutup Pintu Masuk
+  if (servoMasukAktif && (millis() - servoMasukTimer >= SERVO_DURATION)) {
+    
+    // SAFETY CHECK: Apakah masih ada mobil di sensor masuk?
+    if (digitalRead(PIN_SENSOR_MASUK) == LOW) {
+      Serial.println("SAFETY: Mobil masih di Entry Gate. Menunda tutup.");
+      servoMasukTimer = millis(); // Reset timer
+    } else {
+      // Aman, tutup gerbang
+      servoMasuk.write(0);
+      servoMasukAktif = false;
+      updateSlotStatus(true); // Balikin tampilan slot
+      Serial.println("Gate Masuk Ditutup.");
+    }
+  }
+
+  // 2. Logika Tutup Pintu Keluar
+  if (servoKeluarAktif && (millis() - servoKeluarTimer >= SERVO_DURATION)) {
+    
+    // SAFETY CHECK: Apakah masih ada mobil di sensor keluar?
+    if (digitalRead(PIN_SENSOR_KELUAR) == LOW) {
+      Serial.println("SAFETY: Mobil masih di Exit Gate. Menunda tutup.");
+      servoKeluarTimer = millis(); // Reset timer
+    } else {
+      servoKeluar.write(0);
+      servoKeluarAktif = false;
+      // Reset LCD Keluar ke default
+      lcdKeluar.clear();
+      lcdKeluar.print("Sistem Parkir");
+      lcdKeluar.setCursor(0,1); lcdKeluar.print("Siap Digunakan");
+      Serial.println("Gate Keluar Ditutup.");
+    }
+  }
+}
+
+// --- FUNGSI KOMUNIKASI SERVER (SESUAI QWEN) ---
+
+// 1. Kirim Event Laporan
+void sendEventToLaravel(String type, String value) {
+  if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
-    http.begin(String(API_BASE) + "/iot-event");
+    http.begin(String(baseUrl) + "/iot-event"); 
     http.addHeader("Content-Type", "application/json");
-
+    
     StaticJsonDocument<200> doc;
-    doc["slot_name"] = slotName;
-    doc["event_type"] = eventType;
-
+    doc["type"] = type; 
+    doc["value"] = value; 
+    
     String requestBody;
     serializeJson(doc, requestBody);
+    
+    // Tanpa cek response, cukup kirim saja
     http.POST(requestBody);
     http.end();
   }
 }
 
-// --- FUNGSI 3: Ambil Perintah ---
-void getCommandFromLaravel() {
-  if(WiFi.status() == WL_CONNECTED){
+// 2. Cek Command/Tagihan - Diubah untuk mengambil Waktu & Biaya
+bool checkCommandFromServer() { 
+  if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
-    http.begin(String(API_BASE) + "/get-command");
-
-    int httpCode = http.GET();
+    http.begin(String(baseUrl) + "/get-command");
+    http.addHeader("Content-Type", "application/json");
+    
+    // Kirim type: CHECK_BILLING_STATUS
+    StaticJsonDocument<200> doc;
+    doc["type"] = "CHECK_BILLING_STATUS"; 
+    String requestBody;
+    serializeJson(doc, requestBody);
+    
+    int httpCode = http.POST(requestBody); 
+    
     if (httpCode > 0) {
       String payload = http.getString();
-      StaticJsonDocument<200> doc;
-      deserializeJson(doc, payload);
+      StaticJsonDocument<512> respDoc;
+      // Parsing JSON
+      DeserializationError error = deserializeJson(respDoc, payload);
 
-      String cmd = doc["command"].as<String>();
-
-      if (cmd == "OPEN_GATE_ENTER") {
-        lcdEnter.setCursor(0, 1);
-        lcdEnter.print("Welcome!      ");
-        openGate(gateEnter);
-        updateSlotLCD(); // Balik ke tampilan slot
+      if (error) {
+        Serial.print(F("deserializeJson() failed: "));
+        Serial.println(error.f_str());
+        return false;
       }
-      else if (cmd == "OPEN_GATE_EXIT") {
-        // Tampilkan Bill (Simulasi atau Ambil dari JSON jika ada)
-        lcdExit.clear();
-        lcdExit.print("Goodbye!");
-        lcdExit.setCursor(0, 1);
-
-        // Kalau controller kirim bill, tampilkan. Kalau tidak, pesan standar.
-        if (doc.containsKey("bill")) {
-           String billAmount = doc["bill"].as<String>();
-           lcdExit.print("Bill: " + billAmount);
-        } else {
-           lcdExit.print("Safe Trip!");
-        }
-
-        openGate(gateExit);
-        lcdExit.clear(); // Bersihkan setelah mobil lewat
+      
+      // Cek apakah server mengirimkan data 'cost' dan 'time'
+      if (respDoc.containsKey("data") && respDoc["data"].containsKey("cost") && respDoc["data"].containsKey("time")) {
+        // Ambil data dan simpan ke variabel global
+        parkingTime = respDoc["data"]["time"].as<String>();
+        parkingCost = respDoc["data"]["cost"].as<String>();
+        return true; // Data ditemukan
       }
     }
     http.end();
   }
-}
-
-// --- FUNGSI 4: Gerakkan Servo (90 Derajat) ---
-void openGate(Servo &servo) {
-  servo.write(90); // BUKA (90 Derajat)
-  delay(3000);     // Tahan 3 detik
-  servo.write(0);  // TUTUP (0 Derajat)
-}
-
-// --- FUNGSI 5: LCD Entry (Info Slot) ---
-void updateSlotLCD() {
-  int freeSlots = 0;
-  // Sensor IR: HIGH = Kosong (Tidak ada mobil), LOW = Ada Mobil
-  if (digitalRead(IR_SLOT1) == HIGH) freeSlots++;
-  if (digitalRead(IR_SLOT2) == HIGH) freeSlots++;
-  if (digitalRead(IR_SLOT3) == HIGH) freeSlots++;
-  if (digitalRead(IR_SLOT4) == HIGH) freeSlots++;
-
-  lcdEnter.setCursor(0, 0);
-  lcdEnter.print("PARKING INFO    ");
-  lcdEnter.setCursor(0, 1);
-  lcdEnter.print("Empty Slots: " + String(freeSlots) + "/4 ");
+  return false; // Data belum ditemukan atau WiFi terputus
 }
