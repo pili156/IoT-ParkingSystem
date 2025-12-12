@@ -38,16 +38,22 @@ def initialize_models():
     except Exception as e:
         logger.exception(f"Failed initialize_models: {e}")
 
-def send_to_laravel_api(plate_number, image_bytes=None, mode="entry"):
+def send_to_laravel_api(plate_number, webcam_index=1, image_bytes=None, timestamp=None):
     """
     Sends recognized plate to Laravel backend.
+    Args:
+        plate_number: Nomor plat (format: BA3242CD)
+        webcam_index: 1 untuk masuk, 2 untuk keluar
+        image_bytes: Raw image bytes (optional)
+        timestamp: Unix timestamp (optional, akan use server time jika None)
+    
     Returns (success_bool, response_json_or_text)
     """
     try:
         payload = {
-            "plate": plate_number,
-            "mode": mode,
-            "timestamp": time.time()
+            "plate": plate_number.upper().replace(' ', ''),
+            "webcam_index": webcam_index,
+            "timestamp": timestamp or time.time()
         }
         if image_bytes:
             import base64
@@ -60,8 +66,9 @@ def send_to_laravel_api(plate_number, image_bytes=None, mode="entry"):
         }
 
         url = f"{LARAVEL_API_URL.rstrip('/')}/anpr/result"
-        logger.info(f"Posting to Laravel {url} payload keys: {list(payload.keys())}")
+        logger.info(f"Posting to Laravel {url} | plate={plate_number} | webcam={webcam_index}")
         r = requests.post(url, json=payload, headers=headers, timeout=30)
+        
         if r.status_code in (200, 201):
             try:
                 return True, r.json()
@@ -111,33 +118,44 @@ def process_camera_image(image_data):
 @app.route("/process_image", methods=["POST"])
 def process_image_endpoint():
     """
-    Accepts image bytes (raw image content or multipart form 'image').
-    Returns JSON with plate and whether sending to Laravel succeeded.
+    Accepts image bytes with webcam_index parameter.
+    Query params or POST data:
+      - webcam_index: 1 (masuk) atau 2 (keluar)
+    
+    Returns JSON dengan plate dan Laravel response status.
     """
     try:
-        # get bytes
+        # Get webcam index (required)
+        webcam_index = request.args.get('webcam_index', request.form.get('webcam_index', 1), type=int)
+        if webcam_index not in (1, 2):
+            return jsonify({"success": False, "message": "webcam_index harus 1 atau 2"}), 400
+
+        # Get image bytes
         if request.content_type and request.content_type.startswith("image/"):
             img_bytes = request.get_data()
         elif "image" in request.files:
             img_bytes = request.files["image"].read()
         else:
-            # maybe raw without content-type
             img_bytes = request.get_data()
 
         if not img_bytes or len(img_bytes) == 0:
             return jsonify({"success": False, "message": "no image data"}), 400
 
+        # Process ANPR
         plate_text, meta = process_camera_image(img_bytes)
         if not plate_text:
-            return jsonify({"success": True, "message": "no plate", "data": meta}), 200
+            return jsonify({"success": True, "message": "no plate detected", "data": meta}), 200
 
-        # send result to Laravel
-        sent, r = send_to_laravel_api(plate_text, image_bytes=img_bytes, mode="entry")
+        # Send to Laravel dengan webcam_index
+        timestamp = request.args.get('timestamp', request.form.get('timestamp'), type=float)
+        sent, r = send_to_laravel_api(plate_text, webcam_index=webcam_index, 
+                                      image_bytes=img_bytes, timestamp=timestamp)
+        
         result = {
             "success": sent,
             "plate": plate_text,
-            "laravel_response": r,
-            "meta": meta
+            "webcam_index": webcam_index,
+            "laravel_response": r
         }
         status = 200 if sent else 500
         return jsonify(result), status
