@@ -16,7 +16,7 @@ class IncomingCarController extends Controller
     {
         // Ambil data dari yang terbaru
         // Pastikan kolom waktu di View kamu disesuaikan (entry_time atau datetime)
-        $incoming = IncomingCar::orderBy('created_at', 'desc')->get();
+        $incoming = IncomingCar::orderBy('datetime', 'desc')->get();
         return view('incoming-car', compact('incoming'));
     }
 
@@ -45,11 +45,10 @@ class IncomingCarController extends Controller
         }
 
         // 3. Simpan Data ke Database
-        // Catatan: Pastikan nama kolom 'entry_time' sesuai dengan tabel kamu.
-        // Jika di database/model kamu namanya 'datetime', ganti 'entry_time' di bawah menjadi 'datetime'.
+        // Catatan: Pastikan nama kolom 'datetime' sesuai dengan tabel kamu.
         $car = IncomingCar::create([
             'car_no' => $request->car_no ?? 'PENDING',
-            'entry_time' => Carbon::now(), 
+            'datetime' => Carbon::now(), 
             'image_path' => $imgName, // Simpan path gambar agar bisa dilihat di web
             'status' => 'in'
         ]);

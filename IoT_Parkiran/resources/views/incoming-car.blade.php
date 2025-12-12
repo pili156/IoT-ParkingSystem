@@ -28,7 +28,7 @@
                     <td>{{ $car->id }}</td>
                     <td class="fw-bold">{{ $car->car_no }}</td>
                     <!-- Format tanggal biar rapi -->
-                    <td>{{ \Carbon\Carbon::parse($car->entry_time)->format('Y-m-d H:i:s') }}</td>
+                    <td>{{ \Carbon\Carbon::parse($car->datetime)->format('Y-m-d H:i:s') }}</td>
                 </tr>
                 @endforeach
             </tbody>

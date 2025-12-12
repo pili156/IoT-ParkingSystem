@@ -35,7 +35,7 @@ class OutgoingCarController extends Controller
         // 2. Cek apakah mobil masuk sudah ada di database
         $incomingCar = IncomingCar::where('car_no', $request->car_no)
                                   ->where('status', 'in')
-                                  ->orderBy('entry_time', 'desc')
+                                  ->orderBy('datetime', 'desc')
                                   ->first();
 
         if (!$incomingCar) {
