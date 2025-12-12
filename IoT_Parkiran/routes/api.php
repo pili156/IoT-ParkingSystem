@@ -2,61 +2,46 @@
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\API\AuthController;
-use App\Http\Controllers\API\ParkingSpaceController;
-use App\Http\Controllers\API\ANPRController;
-use App\Http\Controllers\API\IoTController;
+
+// Import Controller yang SUDAH kita perbaiki tadi
+use App\Http\Controllers\IncomingCarController;
+use App\Http\Controllers\OutgoingCarController;
+use App\Http\Controllers\IoTController;
 
 /*
 |--------------------------------------------------------------------------
-| API Routes
+| API Routes (Sistem Parkir Sat-Set)
 |--------------------------------------------------------------------------
 |
-| Jalur-jalur API ini diproteksi dengan token Sanctum, cocok untuk
-| komunikasi antar mesin (Python Script & ESP32) serta dashboard web.
+| Jalur komunikasi untuk ESP32 dan Python Camera.
+| Kita buat terbuka (tanpa auth:sanctum) agar demo lancar tanpa ribet token.
 |
 */
 
-// Public routes (for device registration and login only)
-Route::prefix('auth')->group(function () {
-    Route::post('/login', [AuthController::class, 'login']);
-    Route::post('/register-device', [AuthController::class, 'registerDevice']);
-});
+// --- 1. JALUR KHUSUS SENSOR & LCD (ESP32) ---
 
-// Protected routes (memerlukan autentikasi token Sanctum)
-Route::middleware('auth:sanctum')->group(function () {
-    
-    // Rute utama sistem parkir
-    Route::prefix('parking')->group(function () {
-        // Info slot parkir
-        Route::get('/slots', [ParkingSpaceController::class, 'index']);
-        Route::get('/slots/{slot}', [ParkingSpaceController::class, 'show']);
-        
-        // Status parkir
-        Route::post('/slots/status', [ParkingSpaceController::class, 'updateStatus']);
-        
-        // Riwayat kendaraan
-        Route::get('/entries', [ParkingSpaceController::class, 'getEntries']);
-        Route::get('/exits', [ParkingSpaceController::class, 'getExits']);
-        Route::get('/current-vehicles', [ParkingSpaceController::class, 'getCurrentVehicles']);
-    });
-    
-    // Rute khusus ANPR (Python script)
-    Route::prefix('anpr')->group(function () {
-        Route::post('/result', [ANPRController::class, 'storeResult']);
-        Route::get('/results', [ANPRController::class, 'getResults']);
-    });
-    
-    // Rute khusus IoT (ESP32)
-    Route::prefix('iot')->group(function () {
-        Route::post('/event', [IoTController::class, 'handleEvent']);
-        Route::get('/command', [IoTController::class, 'getCommand']);
-        Route::post('/command/consume', [IoTController::class, 'consumeCommand']);
-    });
-    
-    // Rute autentikasi untuk manajemen token
-    Route::prefix('auth')->group(function () {
-        Route::post('/logout', [AuthController::class, 'logout']);
-        Route::get('/me', [AuthController::class, 'me']);
-    });
+// Update status slot (Full/Empty) dari Sensor IR di dalam parkiran
+// Method: POST | URL: http://ip-laptop:8000/api/iot-event
+Route::post('/iot-event', [IoTController::class, 'event']);
+
+// Ambil info sisa slot untuk ditampilkan di LCD Depan
+// Method: GET | URL: http://ip-laptop:8000/api/parking-info
+Route::get('/parking-info', [IoTController::class, 'getParkingInfo']);
+
+
+// --- 2. JALUR KHUSUS KAMERA & DATA (Python Script) ---
+
+// Simpan data mobil MASUK (Foto & Waktu)
+// Method: POST | URL: http://ip-laptop:8000/api/incoming-car
+Route::post('/incoming-car', [IncomingCarController::class, 'store']);
+
+// Simpan data mobil KELUAR (Foto, Waktu, & Hitung Duit)
+// Method: POST | URL: http://ip-laptop:8000/api/outgoing-car
+Route::post('/outgoing-car', [OutgoingCarController::class, 'store']);
+
+
+// --- 3. TEST CONNECTION (Opsional) ---
+// Buat ngecek apakah HP/ESP32 bisa nyambung ke Laptop
+Route::get('/ping', function() {
+    return response()->json(['message' => 'Pong! Server is Alive', 'time' => now()]);
 });
