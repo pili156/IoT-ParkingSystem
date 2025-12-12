@@ -14,7 +14,7 @@ class ANPRController extends Controller
     public function storeResult(Request $r) {
         $plate = $r->input('plate');
         $mode = $r->input('mode'); // entry | exit
-        $img_b64 = $r->input('image_base64'); 
+        $img_b64 = $r->input('image_base64');
 
         // Simpan gambar (Logic ini sudah oke)
         $imgname = null;
@@ -26,25 +26,27 @@ class ANPRController extends Controller
         if ($mode === 'entry') {
             // LOGIKA MASUK: Simpan ke tabel incoming_cars
             // Sesuai jurnal
-            
+
             IncomingCar::create([
                 'car_no'    => $plate,
                 'datetime'  => Carbon::now(), // Sesuai nama kolom di DB kamu
-                // 'image'  => $imgname // Kalau di DB ada kolom image, aktifkan ini
+                'image_path' => $imgname,
+                'status' => 'in'
             ]);
-            
+
             // Kirim perintah buka gerbang MASUK ke ESP32
-            EspCommand::create(['command' => 'OPEN_GATE_ENTER']); 
-            
+            EspCommand::create(['command' => 'OPEN_GATE_ENTER']);
+
             return response()->json(['status' => 'ok', 'message' => 'Mobil Masuk Tercatat']);
-            
+
         } elseif ($mode === 'exit') {
             // LOGIKA KELUAR: Hitung durasi & Simpan ke outgoing_cars
             // Sesuai jurnal
 
             // 1. Cari data masuk terakhir berdasarkan plat nomor
             $entry = IncomingCar::where('car_no', $plate)
-                                ->orderBy('id', 'desc')
+                                ->where('status', 'in') // Hanya cari mobil yang masih dalam status 'in'
+                                ->orderBy('entry_time', 'desc')
                                 ->first();
 
             if (!$entry) {
@@ -54,31 +56,42 @@ class ANPRController extends Controller
             // 2. Hitung Durasi
             $entryTime = Carbon::parse($entry->datetime);
             $exitTime = Carbon::now();
-            
-            // Hitung total detik untuk akurasi, lalu ubah ke format jam
-            $totalSeconds = $exitTime->diffInSeconds($entryTime);
-            $hours = ceil($totalSeconds / 3600); // Pembulatan ke atas (1 jam 1 menit = 2 jam)
-            
-            // 3. Hitung Biaya (Misal Rp 2000 per jam)
-            $ratePerHour = 2000; 
-            $bill = $hours * $ratePerHour;
+
+            // Hitung durasi dalam format: jam:menit:detik
+            $duration = $entryTime->diff($exitTime);
+            $totalTimeFormatted = $duration->format('%H:%I:%S'); // Format: HH:MM:SS
+
+            // Hitung jumlah jam pembulatan ke atas (untuk tarif)
+            $totalSeconds = $entryTime->diffInSeconds($exitTime);
+            $totalHours = ceil($totalSeconds / 3600); // Konversi detik ke jam dan bulatkan ke atas
+
+            // 3. Hitung Biaya (Misal Rp 5000 per jam)
+            $ratePerHour = 5000;
+            $bill = $totalHours * $ratePerHour;
 
             // 4. Simpan ke tabel outgoing_cars (Sesuai struktur DB kamu)
-            OutgoingCar::create([
+            $outgoingCar = OutgoingCar::create([
                 'car_no'     => $plate,
                 'entry_time' => $entryTime,
                 'exit_time'  => $exitTime,
-                'total_time' => $hours . ' Jam', // Atau simpan integer menitnya saja
-                'bill'       => $bill
+                'total_time' => $totalTimeFormatted, // Format HH:MM:SS
+                'total_hours' => $totalHours,        // Jam pembulatan
+                'bill'       => $bill,
+                'image_path' => $imgname             // Tambahkan image_path
             ]);
 
+            // Update status mobil masuk menjadi 'out' agar tidak bisa diproses lagi
+            $entry->update(['status' => 'out']);
+
             // Kirim perintah buka gerbang KELUAR ke ESP32
-            EspCommand::create(['command' => 'OPEN_GATE_EXIT']); 
+            EspCommand::create(['command' => 'OPEN_GATE_EXIT']);
 
             return response()->json([
-                'status' => 'ok', 
-                'bill' => $bill, 
-                'duration' => $hours . ' Jam'
+                'status' => 'ok',
+                'bill' => $bill,
+                'duration' => $totalTimeFormatted,
+                'total_hours' => $totalHours,
+                'outgoing_car' => $outgoingCar
             ]);
         }
 

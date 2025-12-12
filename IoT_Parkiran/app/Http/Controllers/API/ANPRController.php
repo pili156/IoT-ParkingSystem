@@ -78,7 +78,7 @@ class ANPRController extends Controller
 
         // Ambil slot kosong pertama
         $availableSlot = ParkingSlot::where('status', 'Empty')->first();
-        
+
         if ($availableSlot) {
             // Update status slot menjadi penuh
             $availableSlot->update(['status' => 'Full']);
@@ -128,11 +128,16 @@ class ANPRController extends Controller
         $entryTime = Carbon::parse($entry->datetime);
         $exitTime = Carbon::now();
 
-        $totalMinutes = $entryTime->diffInMinutes($exitTime);
-        $totalHours = ceil($totalMinutes / 60); // Pembulatan ke atas
+        // Hitung durasi dalam format: jam:menit:detik
+        $duration = $entryTime->diff($exitTime);
+        $totalTimeFormatted = $duration->format('%H:%I:%S'); // Format: HH:MM:SS
 
-        // Hitung biaya (misalnya Rp 2000 per jam)
-        $ratePerHour = 2000;
+        // Hitung jumlah jam pembulatan ke atas (untuk tarif)
+        $totalSeconds = $entryTime->diffInSeconds($exitTime);
+        $totalHours = ceil($totalSeconds / 3600); // Konversi detik ke jam dan bulatkan ke atas
+
+        // Hitung biaya (misalnya Rp 5000 per jam)
+        $ratePerHour = 5000;
         $bill = $totalHours * $ratePerHour;
 
         // Simpan ke tabel outgoing_cars
@@ -140,7 +145,7 @@ class ANPRController extends Controller
             'car_no' => $plate,
             'entry_time' => $entryTime,
             'exit_time' => $exitTime,
-            'total_time' => $totalMinutes,
+            'total_time' => $totalTimeFormatted, // Format HH:MM:SS
             'total_hours' => $totalHours,
             'bill' => $bill,
             'image_path' => $imageName
@@ -149,7 +154,7 @@ class ANPRController extends Controller
         // Update status slot parkir menjadi kosong
         // Kita bisa mencocokkan dengan slot yang digunakan saat masuk jika ada informasi itu
         // Untuk sementara, ambil slot yang terisi terakhir (bisa disesuaikan dengan logika bisnis)
-        $occupiedSlot = ParkingSlot::where('status', 'Full')->first(); 
+        $occupiedSlot = ParkingSlot::where('status', 'Full')->first();
         if ($occupiedSlot) {
             $occupiedSlot->update(['status' => 'Empty']);
         }
@@ -164,7 +169,7 @@ class ANPRController extends Controller
         return $this->successResponse([
             'outgoing' => $outgoing,
             'bill' => $bill,
-            'duration_minutes' => $totalMinutes,
+            'duration_formatted' => $totalTimeFormatted,
             'duration_hours' => $totalHours,
             'gate_command_sent' => true,
             'released_slot' => $occupiedSlot ? $occupiedSlot->slot_name : null,

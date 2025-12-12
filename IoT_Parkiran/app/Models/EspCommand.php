@@ -1,22 +1,28 @@
 <?php
+
 namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
-class EspCommand extends Model {
+class EspCommand extends Model
+{
+    use HasFactory;
+
+    // Nama tabel (Opsional jika standar, tapi biar yakin)
+    protected $table = 'esp_commands';
+
+    // Kolom yang boleh diisi (Mass Assignment)
     protected $fillable = [
-        'device_id', 
-        'command', 
-        'consumed',
-        'execution_result',
-        'executed_at'
+        'command',          // Isi perintah: "OPEN_ENTRY", "OPEN_EXIT"
+        'is_executed',      // Status: 0 (Belum), 1 (Sudah)
+        'bill',             // Nominal tagihan (opsional)
+        'execution_result'  // Log hasil
     ];
 
+    // Casting tipe data biar otomatis jadi Boolean/Integer
     protected $casts = [
-        'consumed' => 'boolean', 
-        'executed_at' => 'datetime'
-    ];
-
-    protected $dates = [
-        'executed_at'
+        'is_executed' => 'boolean',
+        'bill' => 'decimal:2',
     ];
 }

@@ -1,7 +1,6 @@
 @extends('layout')
 
 @section('content')
-<!-- DataTables CSS -->
 <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css">
 
 <div class="content-box">
@@ -17,50 +16,42 @@
                 <tr>
                     <th>ID</th>
                     <th>Car No</th>
-                    <th>Entry Time</th>
-                    <th>Exit Time</th>
+                    <th>Date & Time</th> <th>Bill (IDR)</th>
                     <th>Total Time</th>
-                    <th>Bill (IDR)</th>
                 </tr>
             </thead>
             <tbody>
-                @forelse($outgoing as $car)
+                @foreach($outgoing as $car)
                 <tr>
                     <td>{{ $car->id }}</td>
                     <td class="fw-bold">{{ $car->car_no }}</td>
-                    <td>{{ $car->entry_time->format('Y-m-d H:i:s') }}</td>
-                    <td>{{ $car->exit_time->format('Y-m-d H:i:s') }}</td>
-                    <td>{{ $car->total_time }} Jam</td>
+                    
+                    <td>{{ $car->exit_time ? \Carbon\Carbon::parse($car->exit_time)->format('Y-m-d H:i:s') : '-' }}</td>
+                    
                     <td class="fw-bold text-success">Rp {{ number_format($car->bill, 0, ',', '.') }}</td>
+                    <td>{{ $car->total_time }}</td>
                 </tr>
-                @empty
-                <tr>
-                    <td colspan="6" class="text-center text-muted">Belum ada data transaksi keluar.</td>
-                </tr>
-                @endforelse
+                @endforeach
             </tbody>
         </table>
     </div>
 </div>
 
-<!-- jQuery + DataTables Script -->
-<!-- Kita masukkan di sini biar tabelnya bisa di-search dan di-sort -->
 <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
 
 <script>
-$(document).ready(function() {
-    $('#outgoingTable').DataTable({
-        "order": [[ 3, "desc" ]], // Urutkan berdasarkan Exit Time (kolom ke-4, index 3) biar yang baru keluar ada di atas
-        "language": {
-            "search": "Search:",
-            "lengthMenu": "Show _MENU_ entries",
-            "zeroRecords": "No matching data found",
-            "info": "Showing _START_ to _END_ of _TOTAL_ entries",
-        }
+    // Inisialisasi DataTables
+    $(document).ready(function() {
+        $('#outgoingTable').DataTable({
+            // Urutkan berdasarkan Date & Time (Kolom ke-3 / index 2) terbaru
+            "order": [[ 2, "desc" ]], 
+            "language": {
+                "search": "Search:", // Label search
+                "lengthMenu": "Show _MENU_ entries" // Label show entries
+            }
+        });
     });
-});
 </script>
-
 @endsection
