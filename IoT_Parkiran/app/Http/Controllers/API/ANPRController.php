@@ -23,7 +23,8 @@ class ANPRController extends Controller
             'plate' => 'required|string|max:20',
             'mode' => 'required|in:entry,exit',
             'image_base64' => 'nullable|string',
-            'timestamp' => 'nullable|date'
+            'timestamp' => 'nullable|date',
+            'slot_name' => 'nullable|string'
         ]);
 
         if ($validator->fails()) {
@@ -45,9 +46,9 @@ class ANPRController extends Controller
         }
 
         if ($mode === 'entry') {
-            return $this->handleEntryMode($plate, $imageName);
+            return $this->handleEntryMode($plate, $imageName, $request->input('slot_name'));
         } elseif ($mode === 'exit') {
-            return $this->handleExitMode($plate, $imageName);
+            return $this->handleExitMode($plate, $imageName, $request->input('slot_name'));
         }
 
         return $this->errorResponse('Invalid mode. Use "entry" or "exit"', [], 400);
@@ -56,7 +57,7 @@ class ANPRController extends Controller
     /**
      * Menangani mode ENTRY (kendaraan masuk)
      */
-    private function handleEntryMode($plate, $imageName)
+    private function handleEntryMode($plate, $imageName, $slotName = null)
     {
         // Cek apakah kendaraan sudah dalam tempat parkir
         $existingEntry = IncomingCar::where('car_no', $plate)
@@ -76,26 +77,34 @@ class ANPRController extends Controller
             return $this->errorResponse('No available parking slots', [], 409);
         }
 
-        // Ambil slot kosong pertama
-        $availableSlot = ParkingSlot::where('status', 'Empty')->first();
-
-        if ($availableSlot) {
-            // Update status slot menjadi penuh
-            $availableSlot->update(['status' => 'Full']);
+        // Jika client memberikan slot_name, gunakan itu; jika tidak, ambil slot kosong pertama
+        $availableSlot = null;
+        if ($slotName) {
+            $availableSlot = ParkingSlot::where('slot_name', $slotName)->first();
+            if ($availableSlot) $availableSlot->update(['status' => 'Full']);
+        } else {
+            $availableSlot = ParkingSlot::where('status', 'Empty')->first();
+            if ($availableSlot) $availableSlot->update(['status' => 'Full']);
         }
 
         // Buat entri baru
-        $entry = IncomingCar::create([
+        $entryData = [
             'car_no' => $plate,
             'datetime' => Carbon::now(),
             'image_path' => $imageName
-        ]);
+        ];
+
+        // default to assigned slot if we have one
+        if ($slotName) $entryData['slot_name'] = $slotName;
+        elseif ($availableSlot) $entryData['slot_name'] = $availableSlot->slot_name;
+
+        $entry = IncomingCar::create($entryData);
 
         // Kirim perintah buka gerbang MASUK ke ESP32
         EspCommand::create([
             'command' => 'OPEN_GATE_ENTER',
             'device_id' => null, // Untuk semua ESP32 atau bisa disesuaikan
-            'consumed' => false
+            'is_executed' => false
         ]);
 
         return $this->successResponse([
@@ -110,7 +119,7 @@ class ANPRController extends Controller
     /**
      * Menangani mode EXIT (kendaraan keluar)
      */
-    private function handleExitMode($plate, $imageName)
+    private function handleExitMode($plate, $imageName, $slotName = null)
     {
         // Cari data masuk terakhir berdasarkan plat nomor yang belum keluar
         $entry = IncomingCar::where('car_no', $plate)
@@ -141,7 +150,7 @@ class ANPRController extends Controller
         $bill = $totalHours * $ratePerHour;
 
         // Simpan ke tabel outgoing_cars
-        $outgoing = OutgoingCar::create([
+        $outgoingData = [
             'car_no' => $plate,
             'entry_time' => $entryTime,
             'exit_time' => $exitTime,
@@ -149,21 +158,31 @@ class ANPRController extends Controller
             'total_hours' => $totalHours,
             'bill' => $bill,
             'image_path' => $imageName
-        ]);
+        ];
+        if ($slotName) $outgoingData['slot_name'] = $slotName;
 
-        // Update status slot parkir menjadi kosong
-        // Kita bisa mencocokkan dengan slot yang digunakan saat masuk jika ada informasi itu
-        // Untuk sementara, ambil slot yang terisi terakhir (bisa disesuaikan dengan logika bisnis)
-        $occupiedSlot = ParkingSlot::where('status', 'Full')->first();
-        if ($occupiedSlot) {
-            $occupiedSlot->update(['status' => 'Empty']);
+        $outgoing = OutgoingCar::create($outgoingData);
+
+        // Update status slot parkir menjadi kosong - jika outgoing memiliki slot_name, kosongkan slot tersebut
+        $releasedSlot = null;
+        if (!empty($outgoing->slot_name)) {
+            $releasedSlot = ParkingSlot::where('slot_name', $outgoing->slot_name)->first();
+            if ($releasedSlot) $releasedSlot->update(['status' => 'Empty']);
+        } else {
+            $occupiedSlot = ParkingSlot::where('status', 'Full')->first();
+            if ($occupiedSlot) {
+                $occupiedSlot->update(['status' => 'Empty']);
+                $releasedSlot = $occupiedSlot;
+            }
         }
 
         // Kirim perintah buka gerbang KELUAR ke ESP32
         EspCommand::create([
             'command' => 'OPEN_GATE_EXIT',
             'device_id' => null,
-            'consumed' => false
+            'is_executed' => false,
+            'bill' => $bill,
+            'total_time' => $totalTimeFormatted
         ]);
 
         return $this->successResponse([
@@ -172,7 +191,7 @@ class ANPRController extends Controller
             'duration_formatted' => $totalTimeFormatted,
             'duration_hours' => $totalHours,
             'gate_command_sent' => true,
-            'released_slot' => $occupiedSlot ? $occupiedSlot->slot_name : null,
+            'released_slot' => $releasedSlot ? $releasedSlot->slot_name : null,
             'message' => 'Vehicle exit recorded successfully'
         ], 'Vehicle exit recorded successfully');
     }

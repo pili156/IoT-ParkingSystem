@@ -11,7 +11,8 @@ class IncomingCar extends Model
         'car_no',
         'datetime',
         'image_path',
-        'status'
+        'status',
+        'slot_name'
     ];
 
     protected $casts = [

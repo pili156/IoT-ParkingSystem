@@ -16,6 +16,8 @@ class EspCommand extends Model
     protected $fillable = [
         'command',          // Isi perintah: "OPEN_ENTRY", "OPEN_EXIT"
         'is_executed',      // Status: 0 (Belum), 1 (Sudah)
+        'device_id',
+        'total_time',
         'bill',             // Nominal tagihan (opsional)
         'execution_result'  // Log hasil
     ];

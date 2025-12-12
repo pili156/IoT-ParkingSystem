@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use App\Models\IncomingCar;
 use App\Models\OutgoingCar;
 use App\Models\EspCommand;
+use App\Models\ParkingSlot;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Storage;
 
@@ -23,7 +24,8 @@ class ANPRController extends Controller
             'plate' => 'required|string',
             'webcam_index' => 'required|integer|in:1,2',
             'image_base64' => 'nullable|string',
-            'timestamp' => 'nullable|numeric'
+            'timestamp' => 'nullable|numeric',
+            'slot_name' => 'nullable|string'
         ]);
 
         $plate = strtoupper(str_replace(' ', '', $r->input('plate'))); // Format: BA3242CD (no space)
@@ -34,12 +36,12 @@ class ANPRController extends Controller
         try {
             // Jika webcam index = 1, simpan ke incoming_cars
             if ($webcamIndex === 1) {
-                return $this->handleIncomingCar($plate, $imgB64, $timestamp);
+                return $this->handleIncomingCar($plate, $imgB64, $timestamp, $r->input('slot_name'));
             }
 
             // Jika webcam index = 2, simpan ke outgoing_cars & hitung biaya
             if ($webcamIndex === 2) {
-                return $this->handleOutgoingCar($plate, $imgB64, $timestamp);
+                return $this->handleOutgoingCar($plate, $imgB64, $timestamp, $r->input('slot_name'));
             }
 
         } catch (\Exception $e) {
@@ -55,7 +57,7 @@ class ANPRController extends Controller
     /**
      * Handle Incoming Car (Webcam Index = 1)
      */
-    private function handleIncomingCar($plate, $imgB64, $timestamp)
+    private function handleIncomingCar($plate, $imgB64, $timestamp, $slotName = null)
     {
         // Cek apakah plat sudah ada dengan status 'in'
         $existing = IncomingCar::where('car_no', $plate)
@@ -90,15 +92,24 @@ class ANPRController extends Controller
             Storage::disk('public')->put($imgPath, base64_decode($imgB64));
         }
 
-        $car = IncomingCar::create([
+        $carData = [
             'car_no' => $plate,
             'datetime' => Carbon::createFromTimestamp($timestamp),
             'image_path' => $imgPath,
             'status' => 'in'
-        ]);
+        ];
+        if ($slotName) $carData['slot_name'] = $slotName;
+
+        $car = IncomingCar::create($carData);
+
+        // If slot provided, mark it full
+        if ($slotName) {
+            $pSlot = ParkingSlot::where('slot_name', $slotName)->first();
+            if ($pSlot) $pSlot->update(['status' => 'Full']);
+        }
 
         // Trigger buka gerbang masuk (ESP32)
-        EspCommand::create(['command' => 'OPEN_GATE_ENTER']);
+        EspCommand::create(['command' => 'OPEN_GATE_ENTER', 'is_executed' => false]);
 
         return response()->json([
             'success' => true,
@@ -110,7 +121,7 @@ class ANPRController extends Controller
     /**
      * Handle Outgoing Car (Webcam Index = 2)
      */
-    private function handleOutgoingCar($plate, $imgB64, $timestamp)
+    private function handleOutgoingCar($plate, $imgB64, $timestamp, $slotName = null)
     {
         // Cari data masuk terakhir
         $entry = IncomingCar::where('car_no', $plate)
@@ -162,6 +173,12 @@ class ANPRController extends Controller
             // Update incoming car status
             $entry->update(['status' => 'out']);
 
+            // Update parking slot to empty if slot_name exists on the incoming record
+            if (!empty($entry->slot_name)) {
+                $pSlot = ParkingSlot::where('slot_name', $entry->slot_name)->first();
+                if ($pSlot) $pSlot->update(['status' => 'Empty']);
+            }
+
             EspCommand::create(['command' => 'OPEN_GATE_EXIT']);
 
             return response()->json([
@@ -173,7 +190,7 @@ class ANPRController extends Controller
         }
 
         // Create new outgoing record
-        $outgoing = OutgoingCar::create([
+        $outgoingData = [
             'car_no' => $plate,
             'entry_time' => $entryTime,
             'exit_time' => $exitTime,
@@ -181,13 +198,22 @@ class ANPRController extends Controller
             'total_hours' => $totalHours,
             'bill' => $bill,
             'image_path' => $imgPath
-        ]);
+        ];
+        if ($slotName) $outgoingData['slot_name'] = $slotName;
+
+        $outgoing = OutgoingCar::create($outgoingData);
 
         // Update incoming car status
         $entry->update(['status' => 'out']);
 
+        // Update parking slot to empty based on slot_name if available
+        if (!empty($outgoing->slot_name)) {
+            $pSlot = ParkingSlot::where('slot_name', $outgoing->slot_name)->first();
+            if ($pSlot) $pSlot->update(['status' => 'Empty']);
+        }
+
         // Trigger buka gerbang keluar (ESP32)
-        EspCommand::create(['command' => 'OPEN_GATE_EXIT']);
+        EspCommand::create(['command' => 'OPEN_GATE_EXIT', 'is_executed' => false, 'bill' => $bill, 'total_time' => $totalTimeFormatted]);
 
         return response()->json([
             'success' => true,

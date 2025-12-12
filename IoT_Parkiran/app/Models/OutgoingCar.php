@@ -13,7 +13,8 @@ class OutgoingCar extends Model
         'total_time',   // Sekarang String (Teks)
         'total_hours',  // Integer (Angka bulat)
         'bill',
-        'image_path'    // Pastikan ini ada
+        'image_path',    // Pastikan ini ada
+        'slot_name'
     ];
 
     protected $casts = [

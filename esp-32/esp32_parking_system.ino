@@ -134,6 +134,9 @@ void loop() {
 
 // --- FUNGSI LOGIKA UTAMA (KOMBISASI ONLINE & SAFETY) ---
 
+// Map sensor index to human readable slot names
+const String slotNames[4] = {"Slot-1", "Slot-2", "Slot-3", "Slot-4"};
+
 void handleEntryGate() {
   // Jika Sensor Masuk Mendeteksi Mobil (LOW)
   if (digitalRead(PIN_SENSOR_MASUK) == LOW) {
@@ -153,9 +156,15 @@ void handleEntryGate() {
         lcdMasuk.print("Hati2 (PENUH)   ");
       }
 
-      // Lapor Server (Belakangan) ke /iot-event
-      sendEventToLaravel("ENTRY", "0"); 
+      // Lapor Server (Belakangan) ke /iot-event (kirim juga slot name jika tersedia)
+      // Jika Using single slot mapping: assign to Slot-1 by default or implement mapping
+      sendEventToLaravel("ENTRY", "1", slotNames[0]); 
       
+      // Acknowledge command if we received one from server
+      if (lastCommandIdReceived > 0) {
+        acknowledgeCommandOnServer(lastCommandIdReceived);
+        lastCommandIdReceived = -1;
+      }
       delay(1000); // Debounce
     }
   }
@@ -173,7 +182,7 @@ void handleExitGate() {
     lcdKeluar.setCursor(0, 1); lcdKeluar.print("Hitung Biaya...");
 
     // Kirim Request ke /iot-event
-    sendEventToLaravel("EXIT_BILLING_REQUEST", "0");
+    sendEventToLaravel("EXIT_BILLING_REQUEST", "1", slotNames[0]);
     lastBillingCheck = millis();
   }
 
@@ -196,6 +205,11 @@ void handleExitGate() {
         servoKeluarAktif = true;
         servoKeluarTimer = millis();
 
+        // acknowlege the command
+        if (lastCommandIdReceived > 0) {
+          acknowledgeCommandOnServer(lastCommandIdReceived);
+          lastCommandIdReceived = -1;
+        }
         exitRequestActive = false;
         parkingTime = ""; // Reset variabel
         parkingCost = ""; // Reset variabel
@@ -237,7 +251,14 @@ void updateSlotStatus(bool forceUpdate) {
       }
     }
     // Kirim Update Slot ke /iot-event
-    if(changed) sendEventToLaravel("SLOT_UPDATE", String(freeSlots));
+    if(changed) {
+      // send per-slot update
+      for(int i=0; i<4; i++){
+        int state = currentStatus[i];
+        // send 1 for free (HIGH) and 0 for occupied (LOW)
+        sendEventToLaravel("SLOT_UPDATE", String(state == HIGH ? "1" : "0"), slotNames[i]);
+      }
+    }
   }
 }
 
@@ -300,15 +321,17 @@ void handleServoTimers() {
 // --- FUNGSI KOMUNIKASI SERVER (SESUAI QWEN) ---
 
 // 1. Kirim Event Laporan
-void sendEventToLaravel(String type, String value) {
+void sendEventToLaravel(String type, String value, String slotName = "") {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     http.begin(String(baseUrl) + "/iot-event"); 
     http.addHeader("Content-Type", "application/json");
     
-    StaticJsonDocument<200> doc;
+    StaticJsonDocument<300> doc;
     doc["type"] = type; 
     doc["value"] = value; 
+    doc["device_id"] = DEVICE_ID;
+    if (slotName.length() > 0) doc["slot_name"] = slotName;
     
     String requestBody;
     serializeJson(doc, requestBody);
@@ -320,6 +343,10 @@ void sendEventToLaravel(String type, String value) {
 }
 
 // 2. Cek Command/Tagihan - Diubah untuk mengambil Waktu & Biaya
+String DEVICE_ID = "esp-1"; // unique device id for this ESP32
+
+int lastCommandIdReceived = -1;
+
 bool checkCommandFromServer() { 
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
@@ -327,8 +354,9 @@ bool checkCommandFromServer() {
     http.addHeader("Content-Type", "application/json");
     
     // Kirim type: CHECK_BILLING_STATUS
-    StaticJsonDocument<200> doc;
+    StaticJsonDocument<256> doc;
     doc["type"] = "CHECK_BILLING_STATUS"; 
+    doc["device_id"] = DEVICE_ID;
     String requestBody;
     serializeJson(doc, requestBody);
     
@@ -351,10 +379,32 @@ bool checkCommandFromServer() {
         // Ambil data dan simpan ke variabel global
         parkingTime = respDoc["data"]["time"].as<String>();
         parkingCost = respDoc["data"]["cost"].as<String>();
+        if (respDoc.containsKey("command_id")) {
+          lastCommandIdReceived = respDoc["command_id"].as<int>();
+        }
         return true; // Data ditemukan
       }
     }
     http.end();
   }
   return false; // Data belum ditemukan atau WiFi terputus
+}
+
+// Helper: Send acknowledgement to server that the command was executed
+void acknowledgeCommandOnServer(int commandId) {
+  if (commandId <= 0) return;
+  if (WiFi.status() != WL_CONNECTED) return;
+  HTTPClient http;
+  http.begin(String(baseUrl) + "/consume-command");
+  http.addHeader("Content-Type", "application/json");
+  StaticJsonDocument<256> doc;
+  doc["command_id"] = commandId;
+  doc["result"] = "OK";
+  doc["device_id"] = DEVICE_ID;
+  String body; serializeJson(doc, body);
+  int code = http.POST(body);
+  if (code > 0) {
+    Serial.println("Ack command: " + String(code));
+  }
+  http.end();
 }

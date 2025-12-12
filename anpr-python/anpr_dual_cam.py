@@ -70,7 +70,7 @@ def extract_plate(frame):
         return None, None
 
 
-def send_to_laravel(plate_text, webcam_index, frame=None):
+def send_to_laravel(plate_text, webcam_index, frame=None, slot_name=None):
     """
     Kirim hasil ANPR ke Laravel API.
     Args:
@@ -95,6 +95,10 @@ def send_to_laravel(plate_text, webcam_index, frame=None):
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
+
+        # Include slot_name if provided
+        if slot_name:
+            payload['slot_name'] = slot_name
 
         response = requests.post(LARAVEL_API, json=payload, headers=headers, timeout=10)
         
@@ -143,7 +147,7 @@ def main():
         plate_in, box_in = extract_plate(frame1)
         if plate_in and time.time() - last_detect_time_in > DEBOUNCE_SECONDS:
             logger.info(f"[MASUK] Plat: {plate_in}")
-            send_to_laravel(plate_in, webcam_index=1, frame=frame1)
+            send_to_laravel(plate_in, webcam_index=1, frame=frame1, slot_name='Slot-1')
             last_detect_time_in = time.time()
 
         # -------------------------
@@ -152,7 +156,7 @@ def main():
         plate_out, box_out = extract_plate(frame2)
         if plate_out and time.time() - last_detect_time_out > DEBOUNCE_SECONDS:
             logger.info(f"[KELUAR] Plat: {plate_out}")
-            send_to_laravel(plate_out, webcam_index=2, frame=frame2)
+            send_to_laravel(plate_out, webcam_index=2, frame=frame2, slot_name='Slot-1')
             last_detect_time_out = time.time()
 
         # Tampilkan feed

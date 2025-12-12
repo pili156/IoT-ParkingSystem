@@ -37,6 +37,8 @@ def test_anpr_api():
             "webcam_index": webcam,
             "timestamp": time.time()
         }
+        # include slot_name for test scenario
+        payload['slot_name'] = 'Slot-1'
 
         print(f"[Test {i}] {label}")
         print(f"  Plate: {plate}")

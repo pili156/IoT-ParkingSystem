@@ -38,7 +38,7 @@ def initialize_models():
     except Exception as e:
         logger.exception(f"Failed initialize_models: {e}")
 
-def send_to_laravel_api(plate_number, webcam_index=1, image_bytes=None, timestamp=None):
+def send_to_laravel_api(plate_number, webcam_index=1, image_bytes=None, timestamp=None, slot_name=None):
     """
     Sends recognized plate to Laravel backend.
     Args:
@@ -67,6 +67,8 @@ def send_to_laravel_api(plate_number, webcam_index=1, image_bytes=None, timestam
 
         url = f"{LARAVEL_API_URL.rstrip('/')}/anpr/result"
         logger.info(f"Posting to Laravel {url} | plate={plate_number} | webcam={webcam_index}")
+        if slot_name:
+            payload['slot_name'] = slot_name
         r = requests.post(url, json=payload, headers=headers, timeout=30)
         
         if r.status_code in (200, 201):
@@ -149,7 +151,7 @@ def process_image_endpoint():
         # Send to Laravel dengan webcam_index
         timestamp = request.args.get('timestamp', request.form.get('timestamp'), type=float)
         sent, r = send_to_laravel_api(plate_text, webcam_index=webcam_index, 
-                                      image_bytes=img_bytes, timestamp=timestamp)
+                          image_bytes=img_bytes, timestamp=timestamp, slot_name=request.args.get('slot_name', request.form.get('slot_name')))
         
         result = {
             "success": sent,

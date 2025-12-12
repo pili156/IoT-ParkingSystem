@@ -117,10 +117,10 @@ void loop() {
   }
 
   // B. Cek Sensor Parkir (Real-time)
-  checkSlot(IR_SLOT1, "Slot 1", lastState1);
-  checkSlot(IR_SLOT2, "Slot 2", lastState2);
-  checkSlot(IR_SLOT3, "Slot 3", lastState3);
-  checkSlot(IR_SLOT4, "Slot 4", lastState4);
+  checkSlot(IR_SLOT1, "Slot-1", lastState1);
+  checkSlot(IR_SLOT2, "Slot-2", lastState2);
+  checkSlot(IR_SLOT3, "Slot-3", lastState3);
+  checkSlot(IR_SLOT4, "Slot-4", lastState4);
 
   // C. Polling Perintah dari Server
   if (millis() - lastPollTime >= pollInterval) {
@@ -172,8 +172,12 @@ void getCommandFromLaravel() {
   if(WiFi.status() == WL_CONNECTED){
     HTTPClient http;
     http.begin(String(API_BASE) + "/get-command"); 
-    
-    int httpCode = http.GET();
+    http.addHeader("Content-Type", "application/json");
+    StaticJsonDocument<200> req;
+    req["type"] = "CHECK_BILLING_STATUS";
+    req["device_id"] = "esp-1";
+    String body; serializeJson(req, body);
+    int httpCode = http.POST(body);
     if (httpCode > 0) {
       String payload = http.getString();
       StaticJsonDocument<200> doc;
@@ -197,13 +201,16 @@ void getCommandFromLaravel() {
         lcdExit.print("Goodbye!");
         lcdExit.setCursor(0, 1);
         
-        // Kalau controller kirim bill, tampilkan. Kalau tidak, pesan standar.
-        if (doc.containsKey("bill")) {
-           String billAmount = doc["bill"].as<String>();
-           lcdExit.print("Bill: " + billAmount);
-        } else {
-           lcdExit.print("Safe Trip!");
-        }
+          // Kalau controller kirim bill (data.cost & data.time), tampilkan. Kalau tidak, pesan standar.
+          if (doc.containsKey("data") && doc["data"].containsKey("cost")) {
+            String billAmount = doc["data"]["cost"].as<String>();
+            String timeStr = doc["data"]["time"].as<String>();
+            lcdExit.print("Time:" + timeStr);
+            lcdExit.setCursor(0, 1);
+            lcdExit.print("Bill:" + billAmount);
+          } else {
+            lcdExit.print("Safe Trip!");
+          }
         
         openGate(gateExit);
         lcdExit.clear(); // Bersihkan setelah mobil lewat
