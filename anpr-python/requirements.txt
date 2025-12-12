@@ -1,0 +1,8 @@
+flask
+opencv-python
+numpy
+ultralytics
+paddlepaddle
+paddleocr
+requests
+python-dotenv
