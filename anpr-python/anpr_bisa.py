@@ -35,25 +35,62 @@ def setup_models():
         logger.exception(f"Failed to load YOLO model: {e}")
         yolo_model = None
 
-    # Load PaddleOCR
+    # Load PaddleOCR with compatibility fallbacks (different PaddleOCR versions accept
+    # different constructor args). Try several signatures and fall back to minimal init.
     try:
-        # Prefer user-provided inference model directory
         if os.path.isdir(PADDLE_OCR_DIR):
             logger.info(f"Loading PaddleOCR model from {PADDLE_OCR_DIR}")
-            # PaddleOCR will auto-detect detection+recognition models if provided in folder
-            ocr_model = PaddleOCR(
-                det=True,
-                rec=True,
-                use_angle_cls=False,
-                rec_model_dir=PADDLE_OCR_DIR,
-                show_log=False
-            )
-            logger.info("Custom PaddleOCR model loaded")
+            try:
+                # Legacy/older signatures that many repos still use (first try)
+                ocr_model = PaddleOCR(det=True, rec=True, use_angle_cls=False, rec_model_dir=PADDLE_OCR_DIR, show_log=False)
+                logger.info("Custom PaddleOCR model loaded (legacy signature)")
+            except ValueError as ve:
+                # Newer PaddleOCR versions may throw ValueError for unsupported parameters
+                logger.debug(f"PaddleOCR legacy init failed with ValueError: {ve}")
+                try:
+                    # Newer signatures that accept explicit model dir for recognition
+                    ocr_model = PaddleOCR(use_textline_orientation=False, lang="en", text_recognition_model_dir=PADDLE_OCR_DIR, det=False, rec=True)
+                    logger.info("Custom PaddleOCR model loaded (new signature)")
+                except Exception as e2:
+                    logger.debug(f"PaddleOCR new-signature init failed: {e2}")
+                    try:
+                        # Try without det/rec parameters for newer versions
+                        ocr_model = PaddleOCR(use_textline_orientation=False, lang="en", text_recognition_model_dir=PADDLE_OCR_DIR)
+                        logger.info("Custom PaddleOCR model loaded (alternative signature)")
+                    except Exception as e3:
+                        logger.debug(f"PaddleOCR alternative init failed: {e3}")
+                        # Last resort: minimal init (will use bundled/default models)
+                        try:
+                            ocr_model = PaddleOCR(lang="en")
+                            logger.info("PaddleOCR initialized with default models (fallback)")
+                        except Exception as e4:
+                            logger.exception(f"Failed to initialize PaddleOCR (all attempts): {e4}")
+                            ocr_model = None
         else:
-            logger.info("PaddleOCR custom model dir not found, using default models")
-            ocr_model = PaddleOCR(use_angle_cls=False, det=True, rec=True, show_log=False)
+            logger.info("PaddleOCR custom model dir not found, trying default models")
+            try:
+                ocr_model = PaddleOCR(use_angle_cls=False, det=True, rec=True, show_log=False)
+                logger.info("PaddleOCR initialized (legacy default args)")
+            except ValueError as ve:
+                logger.debug(f"Default legacy init failed with ValueError: {ve}")
+                try:
+                    ocr_model = PaddleOCR(use_textline_orientation=False, lang="en", det=False, rec=True)
+                    logger.info("PaddleOCR initialized (new default args)")
+                except Exception as e5:
+                    logger.debug(f"Default new-signature init failed: {e5}")
+                    try:
+                        ocr_model = PaddleOCR(use_textline_orientation=False, lang="en")
+                        logger.info("PaddleOCR initialized (alternative default args)")
+                    except Exception as e6:
+                        logger.debug(f"Default alternative init failed: {e6}")
+                        try:
+                            ocr_model = PaddleOCR(lang="en")
+                            logger.info("PaddleOCR initialized with default models (fallback)")
+                        except Exception as e7:
+                            logger.exception(f"Failed to initialize PaddleOCR (all attempts): {e7}")
+                            ocr_model = None
     except Exception as e:
-        logger.exception(f"Failed to initialize PaddleOCR: {e}")
+        logger.exception(f"Unhandled error while initializing PaddleOCR: {e}")
         ocr_model = None
 
     return yolo_model, ocr_model
@@ -211,8 +248,30 @@ def process_image_from_array(img, yolo_model, ocr_model):
                         else:
                             proc_3ch = proc
 
-                        # PaddleOCR expects BGR or path; use ocr_model.ocr(image, det=True, rec=True)
-                        ocr_res = ocr_model.ocr(proc_3ch, det=True, rec=True)
+                        # PaddleOCR expects BGR or path; try multiple call signatures for compatibility
+                        ocr_res = None
+                        try:
+                            # Try newer signature for PaddleOCR version 2.7+
+                            ocr_res = ocr_model.ocr(proc_3ch, det=False, rec=True)  # Only perform recognition step
+                        except TypeError:
+                            try:
+                                # Try alternative signature
+                                ocr_res = ocr_model.ocr(proc_3ch)
+                            except Exception as e1:
+                                try:
+                                    # Fallback to older signature
+                                    ocr_res = ocr_model.ocr(proc_3ch, cls=False)
+                                except Exception as e2:
+                                    logger.debug(f"All OCR call variants failed: {e2}")
+                                    # Final fallback - just call without parameters
+                                    try:
+                                        ocr_res = ocr_model.ocr(proc_3ch)
+                                    except Exception as e3:
+                                        logger.debug(f"OCR final fallback failed: {e3}")
+                                        ocr_res = None
+                        except Exception as e:
+                            logger.debug(f"OCR call failed: {e}")
+                            ocr_res = None
                         # ocr_res shape: list of [ [(box), (text, score)], ... ] for each detected text
                         # We'll take the highest-confidence recognized text for that preproc
                         candidate_text = None

@@ -10,6 +10,9 @@ from flask import Flask, request, jsonify
 
 from anpr_bisa import setup_models, process_image_from_array
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("anpr_api_server")

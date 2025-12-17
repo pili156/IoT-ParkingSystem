@@ -1,0 +1,25 @@
+name: anpr
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python (WAJIB)
+  - python=3.10
+
+  # Core scientific stack
+  - numpy>=1.23
+  - opencv>=4.8
+  - pip
+
+  # (Opsional tapi disarankan)
+  - cudatoolkit=11.8
+
+  # Pip-only packages
+  - pip:
+      - flask>=2.2
+      - ultralytics>=8.1.0
+      - paddlepaddle-gpu==2.6.2
+      - paddleocr>=2.7.0
+      - requests>=2.31
+      - python-dotenv>=1.0

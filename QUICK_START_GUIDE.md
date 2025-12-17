@@ -4,11 +4,28 @@
 
 ### Environment Setup
 - [ ] PHP 8.1+ installed
-- [ ] Python 3.8+ installed
+- [ ] Python 3.8+ installed (or use Conda environment)
 - [ ] MySQL/MariaDB running
 - [ ] Laravel installed (`composer install` done)
-- [ ] Python packages installed (`pip install -r requirements.txt`)
+- [ ] Python packages installed (`pip install -r requirements.txt`) *or* use the Conda environment below
 - [ ] YOLO & OCR models exist in `anpr-python/models/`
+
+**Using Conda (recommended):**
+If you prefer Conda, create and activate the provided environment to install the dependencies reproducibly:
+
+```bash
+cd anpr-python
+conda env create -f environment.yml
+conda activate anpr
+```
+
+Then run the ANPR server:
+
+```bash
+python anpr_api_server.py
+```
+
+For systems with GPUs, follow PaddlePaddle and Ultralytics documentation to install GPU-enabled builds as needed.
 
 ### Configuration Files
 - [ ] `IoT_Parkiran/.env` configured (DB credentials, etc)
