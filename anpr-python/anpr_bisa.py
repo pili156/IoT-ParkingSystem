@@ -6,7 +6,8 @@ import cv2
 import numpy as np
 import requests
 from ultralytics import YOLO
-from paddleocr import PaddleOCR
+from paddleocr import PaddleOCR  # We'll keep this for compatibility, but will use EasyOCR
+import easyocr
 from datetime import datetime, timezone
 import json
 import threading
@@ -97,6 +98,42 @@ class DummyOCR:
         return []
 
 # ===================================================
+# EASYOCR WRAPPER
+# ===================================================
+class EasyOCRWrapper:
+    def __init__(self):
+        try:
+            self.reader = easyocr.Reader(['en'], gpu=False)  # Load English model, can set gpu=True if available
+            logger.info("EasyOCR loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load EasyOCR: {e}")
+            self.reader = None
+
+    def ocr(self, image, det=True, rec=True):
+        """
+        Wrapper to match PaddleOCR interface
+        Returns: List of [bbox, (text, confidence)] for each detected text
+        """
+        if self.reader is None:
+            return []
+
+        try:
+            # EasyOCR readtext returns: [([bbox], text, confidence), ...]
+            results = self.reader.readtext(image)
+
+            # Convert to PaddleOCR-like format: [[bbox, (text, confidence)], ...]
+            formatted_results = []
+            for (bbox, text, confidence) in results:
+                # bbox format from EasyOCR: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+                # Convert to the format expected by the rest of the code
+                formatted_results.append([bbox, (text, confidence)])
+
+            return [formatted_results]  # Wrap in list to match PaddleOCR output structure
+        except Exception as e:
+            logger.error(f"EasyOCR error: {e}")
+            return []
+
+# ===================================================
 # SETUP MODELS
 # ===================================================
 def setup_models():
@@ -110,16 +147,14 @@ def setup_models():
     else:
         logger.warning(f"YOLO model not found at {YOLO_MODEL_PATH}")
 
-    # PaddleOCR
+    # EasyOCR instead of PaddleOCR
     try:
-        if os.path.isdir(PADDLE_OCR_DIR):
-            ocr_model = PaddleOCR(use_angle_cls=False, det=True, rec=True, rec_model_dir=PADDLE_OCR_DIR, show_log=False)
-            logger.info("PaddleOCR loaded successfully")
-        else:
-            ocr_model = PaddleOCR(use_angle_cls=False, lang='en')
-            logger.info("PaddleOCR default model loaded")
+        ocr_model = EasyOCRWrapper()
+        if ocr_model.reader is None:
+            logger.warning("Using DummyOCR due to EasyOCR initialization failure")
+            ocr_model = DummyOCR()
     except Exception as e:
-        logger.exception("Failed to load PaddleOCR, using DummyOCR")
+        logger.exception("Failed to load EasyOCR, using DummyOCR")
         ocr_model = DummyOCR()
 
     return yolo_model, ocr_model
@@ -149,39 +184,106 @@ def process_image_from_array(img, yolo_model, ocr_model):
                 if plate_img.size==0:
                     continue
 
-                # preprocessing simple
+                # Preprocessing for better OCR results
                 proc = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
-                _, proc = cv2.threshold(proc,0,255,cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                proc_3ch = cv2.cvtColor(proc, cv2.COLOR_GRAY2BGR)
 
-                # OCR
-                ocr_res = ocr_model.ocr(proc_3ch, det=False, rec=True)
+                # Try multiple preprocessing approaches to increase OCR success rate
+                # Method 1: Basic threshold
+                _, proc_thresh = cv2.threshold(proc, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+                # Method 2: Adaptive threshold for uneven lighting
+                proc_adaptive = cv2.adaptiveThreshold(proc, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+
+                # Method 3: Contrast enhancement
+                proc_contrast = cv2.equalizeHist(proc)
+
+                # Try OCR with different preprocessing methods
                 candidate_text = ""
                 candidate_conf = 0.0
-                if ocr_res and len(ocr_res)>0 and ocr_res[0]:
-                    for item in ocr_res[0]:
-                        val = item[1]
-                        if isinstance(val,(tuple,list)) and len(val)>=2:
-                            txt = str(val[0])
-                            conf_val = float(val[1])
-                        else:
-                            txt = str(val)
-                            conf_val = 0.5
-                        if conf_val>candidate_conf:
-                            candidate_conf = conf_val
-                            candidate_text = txt
+
+                logger.info(f"Processing plate image of size: {plate_img.shape} with detection confidence: {det_conf:.3f}")
+
+                # Try different preprocessing methods in order of preference
+                preprocess_methods = [
+                    proc_thresh,        # Binary threshold
+                    proc_adaptive,      # Adaptive threshold
+                    proc_contrast       # Contrast enhanced
+                ]
+
+                # OCR - Fix for proper PaddleOCR result parsing
+                logger.info(f"PaddleOCR model type: {type(ocr_model)}")
+
+                if hasattr(ocr_model, '__class__') and 'DummyOCR' in str(ocr_model.__class__):
+                    logger.error("PaddleOCR is not properly initialized, using dummy model")
+                    candidate_text = ""
+                    candidate_conf = 0.0
+                else:
+                    for idx, proc_img in enumerate(preprocess_methods):
+                        method_names = ["Binary Threshold", "Adaptive Threshold", "Contrast Enhancement"]
+                        logger.info(f"Trying OCR with {method_names[idx]} preprocessing")
+
+                        if len(np.unique(proc_img)) < 2:  # Skip if image is all one color
+                            logger.info(f"Skipping {method_names[idx]}, image has too few unique values")
+                            continue
+
+                        proc_3ch = cv2.cvtColor(proc_img, cv2.COLOR_GRAY2BGR)
+
+                        try:
+                            ocr_res = ocr_model.ocr(proc_3ch, det=True, rec=True)
+                            logger.info(f"OCR result with {method_names[idx]}: {type(ocr_res)} - Length: {len(ocr_res) if ocr_res else 'None'}")
+
+                            # Process OCR results - PaddleOCR typically returns: [[bbox, (text, confidence)], ...]
+                            if ocr_res and len(ocr_res) > 0:
+                                if ocr_res[0] is not None and len(ocr_res[0]) > 0:
+                                    logger.info(f"Processing {len(ocr_res[0])} OCR detections")
+                                    for item in ocr_res[0]:
+                                        logger.info(f"OCR item: {type(item)} - {str(item)[:200]}...")  # First 200 chars
+                                        if isinstance(item, (list, tuple)) and len(item) >= 2:
+                                            # item[0] is the bounding box [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
+                                            # item[1] is (text, confidence_score) - this is what we want
+                                            text_info = item[1]
+                                            if isinstance(text_info, (list, tuple)) and len(text_info) >= 2:
+                                                text, conf = text_info[0], text_info[1]
+                                                text = str(text).strip()  # Clean up the text
+                                                conf = float(conf) if isinstance(conf, (int, float)) else 0.0
+
+                                                logger.info(f"Found text: '{text}' with confidence: {conf}")
+
+                                                # Only consider OCR results with sufficient confidence
+                                                if len(text) >= 2 and conf >= OCR_MIN_CONF and conf > candidate_conf:  # Require at least 2 chars
+                                                    candidate_conf = conf
+                                                    candidate_text = text
+                                                    logger.info(f"Updated candidate: '{candidate_text}' with confidence {candidate_conf}")
+                                                elif len(text) >= 2 and conf > candidate_conf:
+                                                    # Even if below threshold, keep the best result for debugging
+                                                    logger.info(f"Found text '{text}' below confidence threshold ({conf} < {OCR_MIN_CONF})")
+
+                        except Exception as ocr_error:
+                            logger.error(f"OCR error with {method_names[idx]}: {str(ocr_error)}")
+                            continue
+
+                        # If we got a good result, break and don't try other methods
+                        if candidate_conf >= OCR_MIN_CONF:
+                            logger.info(f"Selected text from {method_names[idx]}: '{candidate_text}' with confidence {candidate_conf}")
+                            break
+
+                logger.info(f"Final OCR result: '{candidate_text}' with confidence {candidate_conf}")
 
                 if candidate_text:
                     cleaned = post_process_license_plate(candidate_text)
                     score = calculate_plate_pattern_score(cleaned)
                     weighted = score*candidate_conf
                     if weighted>0:
+                        logger.info(f"License Plate OCR - Raw: '{candidate_text}', Cleaned: '{cleaned}', OCR Confidence: {candidate_conf:.3f}, Detection Confidence: {det_conf:.3f}")
                         plates.append({
                             "text": cleaned,
-                            "confidence": candidate_conf,
+                            "confidence": candidate_conf,  # This is now the OCR confidence (not YOLO confidence)
                             "bbox":[int(x1),int(y1),int(x2),int(y2)],
-                            "detection_confidence": det_conf
+                            "detection_confidence": det_conf  # This remains the YOLO detection confidence
                         })
+                else:
+                    # Log when no text is found to help debug
+                    logger.info(f"No valid text found in detected plate region. OCR Confidence: {candidate_conf:.3f}, Candidate text: '{candidate_text}', Detection Confidence: {det_conf:.3f}")
         return plates
 
     except Exception as e:
