@@ -184,6 +184,10 @@ def process_image_from_array(img, yolo_model, ocr_model):
                 if plate_img.size==0:
                     continue
 
+                # Wait 2 seconds after YOLO detection to allow image to stabilize
+                logger.info(f"Waiting 2 seconds after YOLO detection for image stabilization...")
+                time.sleep(5)
+
                 # Preprocessing for better OCR results
                 proc = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
 
