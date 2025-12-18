@@ -123,7 +123,8 @@ def process_camera_image(image_data):
         if img is None:
             return None, "cannot decode image"
 
-        plates = process_image_from_array(img, yolo_model, ocr_model)
+        # Gunakan fungsi dengan fallback Gemini API
+        plates = process_image_from_array_with_fallback(img, yolo_model, ocr_model)
         if not plates:
             return None, "no plate detected"
         # choose best by combined (detection_confidence * recognition_confidence)

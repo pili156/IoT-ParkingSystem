@@ -1,0 +1,93 @@
+PENJELASAN KODE PROGRAM SISTEM PARKIR PINTAR BERBASIS IoT
+
+1. KODE PROGRAM ESP32 (ARDUINO)
+===============================
+
+File: esp32_parking_system.ino
+
+Fungsi Utama:
+- Mengontrol sistem hardware parkir pintar berbasis mikrokontroler ESP32
+- Mengelola sensor IR untuk mendeteksi keberadaan kendaraan di slot parkir
+- Mengendalikan gerbang otomatis menggunakan servo motor
+- Menampilkan informasi pada layar LCD
+- Berkomunikasi dengan server backend melalui WiFi
+
+Konfigurasi:
+- WiFi: SSID "Raflii", Password "77777777"
+- Server API: http://10.218.100.27:8000/api
+- Pin Sensor IR: 34, 35, 32, 33 (untuk slot parkir), 25, 26 (untuk gerbang)
+- Pin Servo: 18 (gerbang masuk), 19 (gerbang keluar)
+- Alamat LCD: 0x26 (masuk), 0x27 (keluar)
+
+Fungsi-Fungsi Penting:
+- setup(): Inisialisasi hardware dan koneksi WiFi
+- loop(): Loop utama sistem yang memantau sensor dan komunikasi
+- checkSlot(): Mengecek perubahan status slot parkir
+- sendEventToLaravel(): Mengirim data sensor ke server
+- getCommandFromLaravel(): Mengambil perintah dari server
+- openGate(): Mengendalikan servo membuka gerbang
+- updateSlotLCD(): Memperbarui tampilan LCD jumlah slot kosong
+
+2. SISTEM ANPR (PYTHON)
+=======================
+
+File: anpr_api_server.py dan anpr_bisa.py
+
+Fungsi Utama:
+- Sistem Pengenalan Plat Nomor Otomatis (ANPR) berbasis Python
+- Menggunakan YOLO untuk deteksi plat nomor dan PaddleOCR untuk rekognisi teks
+- Menerima gambar dari kamera dan mengenali nomor plat kendaraan
+- Mengirim hasil ke server Laravel untuk pemrosesan lebih lanjut
+
+Komponen Utama:
+- Flask API Server: Menerima permintaan gambar dan mengembalikan hasil ANPR
+- Model YOLO: Mendeteksi wilayah plat nomor dalam gambar
+- PaddleOCR: Melakukan rekognisi teks pada wilayah plat
+- Preprocessing: 9 teknik berbeda untuk meningkatkan akurasi OCR
+
+Endpoint API:
+- POST /process_image: Memproses gambar dan mengembalikan nomor plat
+- GET /health: Mengecek status layanan ANPR
+
+Fungsi Penting:
+- process_camera_image(): Memproses data gambar dari kamera
+- process_image_from_array(): Memproses gambar dalam bentuk array
+- calculate_plate_pattern_score(): Memberi skor pada hasil OCR berdasarkan pola plat Indonesia
+- post_process_license_plate(): Membersihkan dan memformat hasil OCR
+- send_to_laravel_api(): Mengirim hasil ke server Laravel
+
+3. BACKEND LARAVEL
+==================
+
+File-file penting: composer.json, Controller, Model, routes/api.php, routes/web.php
+
+Fungsi Utama:
+- Manajemen data parkir kendaraan (masuk/keluar)
+- Pengelolaan status slot parkir real-time
+- Perhitungan biaya parkir otomatis
+- Dashboard admin untuk monitoring sistem
+- API untuk komunikasi dengan ESP32 dan ANPR
+
+Struktur Penting:
+- Framework: Laravel 12 dengan PHP 8.2+
+- Database: MySQL/MariaDB untuk menyimpan semua data parkir
+- API Routes: Untuk komunikasi dengan ESP32 dan ANPR
+- Web Routes: Untuk antarmuka admin
+
+Model Utama:
+- ParkingSlot: Melacak status slot parkir (penuh/kosong)
+- IncomingCar: Mencatat kendaraan yang masuk
+- OutgoingCar: Mencatat kendaraan yang keluar dan biaya
+- EspCommand: Antrian perintah untuk ESP32 (buka gerbang)
+
+Controller API:
+- ANPRController: Menangani hasil rekognisi plat
+- IoTController: Menangani data dari sensor ESP32
+- Fungsi masuk/keluar kendaraan dan perhitungan tagihan
+
+Fitur Sistem:
+- Otomatisasi pembukaan gerbang berdasarkan identifikasi plat
+- Perhitungan biaya otomatis (Rp 5000 per jam, dibulatkan ke atas)
+- Monitoring real-time status slot parkir
+- Antarmuka admin untuk manajemen data
+- Sistem keamanan dengan otentikasi API

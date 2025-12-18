@@ -145,43 +145,85 @@ def process_image_from_array(img, yolo_model, ocr_model):
             for i, box in enumerate(xyxy):
                 x1,y1,x2,y2 = box.tolist()
                 det_conf = float(confs[i])
+                # Pastikan koordinat dalam batas gambar
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(img.shape[1], x2), min(img.shape[0], y2)
                 plate_img = img[y1:y2, x1:x2]
+
                 if plate_img.size==0:
                     continue
 
-                # preprocessing simple
-                proc = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
-                _, proc = cv2.threshold(proc,0,255,cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                proc_3ch = cv2.cvtColor(proc, cv2.COLOR_GRAY2BGR)
+                # Coba beberapa teknik pra-pemrosesan untuk meningkatkan OCR
+                candidate_texts = []
 
-                # OCR
-                ocr_res = ocr_model.ocr(proc_3ch, det=False, rec=True)
-                candidate_text = ""
-                candidate_conf = 0.0
-                if ocr_res and len(ocr_res)>0 and ocr_res[0]:
-                    for item in ocr_res[0]:
-                        val = item[1]
-                        if isinstance(val,(tuple,list)) and len(val)>=2:
-                            txt = str(val[0])
-                            conf_val = float(val[1])
-                        else:
-                            txt = str(val)
-                            conf_val = 0.5
-                        if conf_val>candidate_conf:
-                            candidate_conf = conf_val
-                            candidate_text = txt
+                # Teknik 1: Threshold biasa
+                proc1 = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
+                _, proc1 = cv2.threshold(proc1,0,255,cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                proc1_3ch = cv2.cvtColor(proc1, cv2.COLOR_GRAY2BGR)
 
-                if candidate_text:
-                    cleaned = post_process_license_plate(candidate_text)
-                    score = calculate_plate_pattern_score(cleaned)
-                    weighted = score*candidate_conf
-                    if weighted>0:
-                        plates.append({
-                            "text": cleaned,
-                            "confidence": candidate_conf,
-                            "bbox":[int(x1),int(y1),int(x2),int(y2)],
-                            "detection_confidence": det_conf
-                        })
+                # Teknik 2: Contrast enhancement
+                proc2 = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
+                proc2 = cv2.equalizeHist(proc2)
+                proc2 = cv2.cvtColor(proc2, cv2.COLOR_GRAY2BGR)
+
+                # Teknik 3: CLAHE
+                proc3 = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
+                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+                proc3 = clahe.apply(proc3)
+                proc3 = cv2.cvtColor(proc3, cv2.COLOR_GRAY2BGR)
+
+                # Teknik 4: Gaussian blur + threshold
+                proc4 = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
+                proc4 = cv2.GaussianBlur(proc4, (5, 5), 0)
+                _, proc4 = cv2.threshold(proc4, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                proc4_3ch = cv2.cvtColor(proc4, cv2.COLOR_GRAY2BGR)
+
+                # Teknik 5: Bilateral filter untuk mengurangi noise
+                proc5 = cv2.bilateralFilter(plate_img, 9, 75, 75)
+                proc5 = cv2.cvtColor(proc5, cv2.COLOR_BGR2GRAY)
+                _, proc5 = cv2.threshold(proc5, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                proc5_3ch = cv2.cvtColor(proc5, cv2.COLOR_GRAY2BGR)
+
+                # Proses semua teknik pra-pemrosesan
+                for idx, processed_img in enumerate([proc1_3ch, proc2, proc3, proc4_3ch, proc5_3ch]):
+                    try:
+                        ocr_res = ocr_model.ocr(processed_img, det=False, rec=True)
+                        if ocr_res and len(ocr_res) > 0 and ocr_res[0]:
+                            for item in ocr_res[0]:
+                                if isinstance(item, (tuple, list)) and len(item) >= 2:
+                                    txt = str(item[0])
+                                    conf_val = float(item[1])
+                                    candidate_texts.append((txt, conf_val, f"method_{idx+1}"))
+                    except Exception as ocr_e:
+                        logger.warning(f"OCR error with method {idx+1}: {ocr_e}")
+                        continue
+
+                # Pilih teks terbaik berdasarkan kepercayaan dan skor pola
+                best_text = ""
+                best_conf = 0.0
+                best_score = 0.0
+
+                for text, conf, method in candidate_texts:
+                    if text.strip():
+                        cleaned = post_process_license_plate(text)
+                        pattern_score = calculate_plate_pattern_score(cleaned)
+                        weighted_score = pattern_score * conf
+
+                        if weighted_score > best_score:
+                            best_score = weighted_score
+                            best_text = cleaned
+                            best_conf = conf
+
+                # Jika ada teks yang terdeteksi dengan keyakinan cukup
+                if best_text and best_conf > OCR_MIN_CONF:
+                    plates.append({
+                        "text": best_text,
+                        "confidence": best_conf,
+                        "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                        "detection_confidence": det_conf,
+                        "processing_method": "multi_method_optimized"
+                    })
+
         return plates
 
     except Exception as e:
@@ -332,6 +374,121 @@ def queued_retry_worker():
         time.sleep(ANPR_RETRY_INTERVAL)
 
 # ===================================================
+# GEMINI API INTEGRATION
+# ===================================================
+
+# Import tambahan untuk Gemini API
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    logger.warning("Google Generative AI library not installed. Install with: pip install google-generativeai")
+    GEMINI_AVAILABLE = False
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", None)
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-pro-vision")
+
+def extract_text_with_gemini(image, fallback_text=None, fallback_conf=0.0):
+    """
+    Fungsi untuk mengekstrak teks dari gambar menggunakan Gemini API.
+    Jika teks dari fallback tersedia, gunakan itu sebagai referensi tambahan.
+    """
+    if not GEMINI_AVAILABLE:
+        logger.warning("Gemini API not available - Google Generative AI library missing")
+        return fallback_text, fallback_conf
+
+    if not GEMINI_API_KEY:
+        logger.warning("GEMINI_API_KEY not set in environment")
+        return fallback_text, fallback_conf
+
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel(GEMINI_MODEL_NAME)
+
+        # Konversi gambar OpenCV ke format yang bisa diproses Gemini
+        _, img_encoded = cv2.imencode('.jpg', image)
+        img_bytes = img_encoded.tobytes()
+
+        # Buat prompt khusus untuk membaca plat nomor
+        prompt = """
+        Ekstrak nomor plat mobil dari gambar ini. Hanya kembalikan nomor platnya saja, tanpa penjelasan tambahan.
+        Contoh format nomor plat Indonesia: B 1234 ABC, CC 1234 AB, D 5678 XY
+        Jika tidak ada plat nomor yang terlihat dengan jelas, kembalikan pesan "TIDAK ADA PLAT".
+        """
+
+        response = model.generate_content([
+            prompt,
+            {
+                "mime_type": "image/jpeg",
+                "data": img_bytes
+            }
+        ])
+
+        if response.text:
+            plate_text = response.text.strip()
+            # Hapus pesan standar jika tidak ada plat
+            if "TIDAK ADA PLAT" in plate_text.upper():
+                return None, 0.0
+            # Bersihkan teks plat
+            cleaned_plate = post_process_license_plate(plate_text)
+            return cleaned_plate, 0.8  # Kita asumsikan kepercayaan 0.8 untuk hasil Gemini
+    except Exception as e:
+        logger.error(f"Gemini API error: {e}")
+
+    return fallback_text, fallback_conf
+
+
+def process_image_from_array_with_fallback(img, yolo_model, ocr_model):
+    """
+    Versi yang mencoba OCR lokal dulu, baru pakai Gemini API jika gagal
+    """
+    # Coba dulu dengan OCR lokal
+    plates = process_image_from_array(img, yolo_model, ocr_model)
+
+    # Jika tidak ada hasil yang bagus dari OCR lokal, coba dengan Gemini
+    if len(plates) == 0 or all(plate.get("confidence", 0) < 0.6 for plate in plates):
+        logger.info("Local OCR failed or low confidence, trying Gemini API...")
+        # Coba deteksi YOLO dulu untuk mendapatkan kotak plat
+        try:
+            results = yolo_model(img, conf=YOLO_CONF_THRESH)
+            for res in results:
+                boxes = getattr(res, "boxes", None)
+                if boxes is None or len(boxes) == 0:
+                    continue
+
+                xyxy = boxes.xyxy.cpu().numpy().astype(int)
+                confs = boxes.conf.cpu().numpy()
+                for i, box in enumerate(xyxy):
+                    x1, y1, x2, y2 = box.tolist()
+                    det_conf = float(confs[i])
+                    # Pastikan koordinat dalam batas gambar
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(img.shape[1], x2), min(img.shape[0], y2)
+                    plate_img = img[y1:y2, x1:x2]
+
+                    if plate_img.size == 0:
+                        continue
+
+                    # Ekstrak teks dengan Gemini
+                    gemini_text, gemini_conf = extract_text_with_gemini(plate_img)
+
+                    if gemini_text and gemini_conf > 0.5:
+                        plates.append({
+                            "text": gemini_text,
+                            "confidence": gemini_conf,
+                            "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                            "detection_confidence": det_conf,
+                            "processing_method": "gemini_api"
+                        })
+                        logger.info(f"Gemini API successfully extracted plate: {gemini_text}")
+                        break  # Hanya ambil satu hasil terbaik dari Gemini
+        except Exception as e:
+            logger.error(f"Error in Gemini fallback: {e}")
+
+    return plates
+
+
+# ===================================================
 # CAMERA LOOP (Dual camera: entry=1, exit=2)
 # ===================================================
 
@@ -375,13 +532,14 @@ def run_camera_loop():
 
             # Process entry camera
             if ret_in and frame_in is not None:
-                plates_in = process_image_from_array(frame_in, yolo_model, ocr_model)
+                # Gunakan fungsi dengan fallback Gemini API
+                plates_in = process_image_from_array_with_fallback(frame_in, yolo_model, ocr_model)
                 for plate in plates_in:
                     plate_text = plate.get("text")
                     if plate_text and (plate_text != last_plate_in or time.time() - last_time_in > COOLDOWN):
                         last_plate_in = plate_text
                         last_time_in = time.time()
-                        logger.info(f"[ENTRY] Plate detected: {plate_text}")
+                        logger.info(f"[ENTRY] Plate detected: {plate_text} (method: {plate.get('processing_method', 'unknown')})")
                         # send detection only (no image) and mode 'entry'
                         send_plate_to_laravel(plate_text, frame=None, webcam_index=1, slot_name=None, mode='entry')
                     x1, y1, x2, y2 = plate.get("bbox", [0,0,0,0])
@@ -390,13 +548,14 @@ def run_camera_loop():
 
             # Process exit camera
             if ret_out and frame_out is not None:
-                plates_out = process_image_from_array(frame_out, yolo_model, ocr_model)
+                # Gunakan fungsi dengan fallback Gemini API
+                plates_out = process_image_from_array_with_fallback(frame_out, yolo_model, ocr_model)
                 for plate in plates_out:
                     plate_text = plate.get("text")
                     if plate_text and (plate_text != last_plate_out or time.time() - last_time_out > COOLDOWN):
                         last_plate_out = plate_text
                         last_time_out = time.time()
-                        logger.info(f"[EXIT] Plate detected: {plate_text}")
+                        logger.info(f"[EXIT] Plate detected: {plate_text} (method: {plate.get('processing_method', 'unknown')})")
                         # send detection only (no image) and mode 'exit'
                         send_plate_to_laravel(plate_text, frame=None, webcam_index=2, slot_name=None, mode='exit')
                     x1, y1, x2, y2 = plate.get("bbox", [0,0,0,0])

@@ -6,3 +6,4 @@ paddlepaddle-gpu==2.6.2
 paddleocr>=2.7.0
 requests>=2.31
 python-dotenv>=1.0
+google-generativeai>=0.5.0
