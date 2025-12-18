@@ -1,117 +1,62 @@
 # anpr_bisa.py
 import os
-import cv2
+import time
 import logging
+import cv2
 import numpy as np
+import requests
 from ultralytics import YOLO
 from paddleocr import PaddleOCR
+from datetime import datetime, timezone
+import json
+import threading
+
+# Retry / queue settings
+ANPR_RETRIES = int(os.getenv('ANPR_RETRIES', 3))
+ANPR_RETRY_BACKOFF = int(os.getenv('ANPR_RETRY_BACKOFF', 1))  # seconds multiply
+ANPR_RETRY_INTERVAL = int(os.getenv('ANPR_RETRY_INTERVAL', 30))  # background flush interval
+ANPR_QUEUE_FILE = os.getenv('ANPR_QUEUE_FILE', 'anpr_failed_queue.jsonl')
+ANPR_TOKEN = os.getenv('ANPR_TOKEN', None)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# Config via environment (or default)
+# ===================================================
+# CONFIG
+# ===================================================
 YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "models/yolo/best.pt")
-PADDLE_OCR_DIR = os.getenv("PADDLE_OCR_DIR", "models/ocr")  # folder yang berisi inference.pdmodel/pdiparams/inference.yml
+PADDLE_OCR_DIR = os.getenv("PADDLE_OCR_DIR", "models/ocr")
 YOLO_CONF_THRESH = float(os.getenv("YOLO_CONF_THRESH", 0.5))
-OCR_MIN_CONF = float(os.getenv("OCR_MIN_CONF", 0.35))  # min confidence untuk menerima hasil OCR
+OCR_MIN_CONF = float(os.getenv("OCR_MIN_CONF", 0.35))
 
-def setup_models():
-    """
-    Load YOLO and PaddleOCR models. Return (yolo_model, ocr_model).
-    Uses paths from environment variables or defaults above.
-    """
-    yolo_model = None
-    ocr_model = None
+# Laravel (default points to Laravel API endpoint)
+LARAVEL_API_URL = os.getenv("LARAVEL_API_URL", "http://localhost:8000/api/anpr/result")
+ANPR_TOKEN = os.getenv("ANPR_TOKEN", "your_anpr_token_here")
+# Default mode for this camera (entry/exit). You can override with env DEFAULT_MODE
+DEFAULT_MODE = os.getenv("DEFAULT_MODE", "entry")
 
-    # Load YOLO
-    try:
-        if not os.path.exists(YOLO_MODEL_PATH):
-            logger.error(f"YOLO model not found at {YOLO_MODEL_PATH}")
-        else:
-            logger.info(f"Loading YOLO model from {YOLO_MODEL_PATH}")
-            yolo_model = YOLO(YOLO_MODEL_PATH)
-            logger.info("YOLO model loaded")
-    except Exception as e:
-        logger.exception(f"Failed to load YOLO model: {e}")
-        yolo_model = None
+# Dual camera configuration: Entry camera index and Exit camera index
+ENTRY_CAMERA_INDEX = int(os.getenv("ENTRY_CAMERA_INDEX", 1))
+EXIT_CAMERA_INDEX = int(os.getenv("EXIT_CAMERA_INDEX", 2))
 
-    # Load PaddleOCR
-    try:
-        # Prefer user-provided inference model directory
-        if os.path.isdir(PADDLE_OCR_DIR):
-            logger.info(f"Loading PaddleOCR model from {PADDLE_OCR_DIR}")
-            # PaddleOCR will auto-detect detection+recognition models if provided in folder
-            ocr_model = PaddleOCR(
-                det=True,
-                rec=True,
-                use_angle_cls=False,
-                rec_model_dir=PADDLE_OCR_DIR,
-                show_log=False
-            )
-            logger.info("Custom PaddleOCR model loaded")
-        else:
-            logger.info("PaddleOCR custom model dir not found, using default models")
-            ocr_model = PaddleOCR(use_angle_cls=False, det=True, rec=True, show_log=False)
-    except Exception as e:
-        logger.exception(f"Failed to initialize PaddleOCR: {e}")
-        ocr_model = None
+# Legacy single-camera index (kept for compatibility)
+WEBCAM_INDEX = int(os.getenv("WEBCAM_INDEX", 0))  # USB cam index
+COOLDOWN = int(os.getenv("COOLDOWN", 2))  # detik sebelum kirim plat yang sama lagi
 
-    return yolo_model, ocr_model
-
-
-def _xyxy_int_array_from_boxes(boxes):
-    """
-    Helper: converts result.boxes to numpy arrays safely
-    boxes: Boxes object from ultralytics Results
-    Returns arrays (xyxy_arr, conf_arr, cls_arr) or (None, None, None)
-    """
-    try:
-        xyxy = boxes.xyxy.cpu().numpy()  # shape (N,4)
-        conf = boxes.conf.cpu().numpy()  # shape (N,)
-        cls = boxes.cls.cpu().numpy()    # shape (N,)
-        return xyxy.astype(int), conf, cls.astype(int)
-    except Exception:
-        # fallback: sometimes boxes is list of Box objects; handle generic iteration
-        try:
-            arr = []
-            confs = []
-            clss = []
-            for b in boxes:
-                coords = b.xyxy[0].cpu().numpy().astype(int)
-                arr.append(coords)
-                confs.append(float(b.conf[0].cpu().numpy()))
-                clss.append(int(b.cls[0].cpu().numpy()))
-            if arr:
-                return np.array(arr), np.array(confs), np.array(clss)
-        except Exception:
-            return None, None, None
-    return None, None, None
-
-
+# ===================================================
+# HELPERS
+# ===================================================
 def post_process_license_plate(text):
-    """
-    Simple post process to clean/format license plate string.
-    Keep it conservative and deterministic: uppercase, remove weird chars, try add spaces.
-    This function is intentionally simple — keep complex domain rules in separate helper if needed.
-    """
     import re
     if not text:
         return ""
     txt = text.upper()
-    # common replacements
-    subs = {
-        '@': '0', 'O': '0', 'Q': '0', 'D': '0',
-        'I': '1', 'L': '1', '|': '1', '!': '1',
-        'S': '5', 'Z': '2'
-    }
-    for k, v in subs.items():
-        txt = txt.replace(k, v)
-    # remove any non alnum or space
+    subs = {'@':'0','O':'0','Q':'0','D':'0','I':'1','L':'1','|':'1','!':'1','S':'5','Z':'2'}
+    for k,v in subs.items():
+        txt = txt.replace(k,v)
     txt = re.sub(r'[^A-Z0-9 ]+', ' ', txt)
     txt = ' '.join(txt.split())
-    # attempt to insert spaces for common patterns: 1-2 letters + numbers + 1-3 letters
-    no_space = txt.replace(" ", "")
-    import re
+    no_space = txt.replace(" ","")
     m = re.match(r'^([A-Z]{1,2})(\d{1,4})([A-Z]{0,3})$', no_space)
     if m:
         parts = [m.group(1), m.group(2)]
@@ -120,151 +65,366 @@ def post_process_license_plate(text):
         return " ".join(parts)
     return txt
 
-
 def calculate_plate_pattern_score(text):
-    """
-    Lightweight scoring that rewards patterns likely to be license plates.
-    Use this to pick the best OCR candidate among preprocessing attempts.
-    """
     import re
     if not text:
         return 0.0
-    t = text.replace(" ", "")
+    t = text.replace(" ","")
     score = 1.0
     if re.match(r'^[A-Z]\d{1,4}[A-Z]{0,3}$', t):
         score *= 10.0
     elif re.match(r'^[A-Z]{2}\d{1,4}[A-Z]{0,3}$', t):
         score *= 9.0
     else:
-        # some letters + digits mixture
         if any(c.isdigit() for c in t) and any(c.isalpha() for c in t):
             score *= 4.0
         else:
             score *= 0.5
-    # length penalty
-    if len(t) < 4 or len(t) > 10:
+    if len(t)<4 or len(t)>10:
         score *= 0.5
     return score
 
+# ===================================================
+# DUMMY OCR
+# ===================================================
+class DummyOCR:
+    def __init__(self):
+        self._warned = False
+    def ocr(self, *args, **kwargs):
+        if not self._warned:
+            logger.error("PaddleOCR not available — OCR disabled.")
+            self._warned = True
+        return []
 
+# ===================================================
+# SETUP MODELS
+# ===================================================
+def setup_models():
+    yolo_model = None
+    ocr_model = None
+
+    # YOLO
+    if os.path.exists(YOLO_MODEL_PATH):
+        logger.info(f"Loading YOLO model from {YOLO_MODEL_PATH}")
+        yolo_model = YOLO(YOLO_MODEL_PATH)
+    else:
+        logger.warning(f"YOLO model not found at {YOLO_MODEL_PATH}")
+
+    # PaddleOCR
+    try:
+        if os.path.isdir(PADDLE_OCR_DIR):
+            ocr_model = PaddleOCR(use_angle_cls=False, det=True, rec=True, rec_model_dir=PADDLE_OCR_DIR, show_log=False)
+            logger.info("PaddleOCR loaded successfully")
+        else:
+            ocr_model = PaddleOCR(use_angle_cls=False, lang='en')
+            logger.info("PaddleOCR default model loaded")
+    except Exception as e:
+        logger.exception("Failed to load PaddleOCR, using DummyOCR")
+        ocr_model = DummyOCR()
+
+    return yolo_model, ocr_model
+
+# ===================================================
+# PROCESS IMAGE
+# ===================================================
 def process_image_from_array(img, yolo_model, ocr_model):
-    """
-    Core pipeline:
-    - Run YOLO detection to get candidate plate boxes
-    - For each box: crop -> try preprocessing techniques -> OCR -> choose best candidate
-    Return list of dicts: [{'text':..., 'confidence':..., 'bbox':[x1,y1,x2,y2], 'method':...}, ...]
-    """
     if yolo_model is None or ocr_model is None:
-        logger.error("Models not loaded")
         return []
 
     try:
-        # Run YOLO
         results = yolo_model(img, conf=YOLO_CONF_THRESH)
-        plate_texts = []
+        plates = []
 
-        for res in results:  # iterate result per image (should be one)
+        for res in results:
             boxes = getattr(res, "boxes", None)
-            if boxes is None or len(boxes) == 0:
+            if boxes is None or len(boxes)==0:
                 continue
 
-            xyxy_arr, conf_arr, cls_arr = _xyxy_int_array_from_boxes(boxes)
-            if xyxy_arr is None:
-                continue
-
-            for idx, box_coords in enumerate(xyxy_arr):
-                x1, y1, x2, y2 = box_coords.tolist()
-                det_conf = float(conf_arr[idx]) if conf_arr is not None else 0.0
-
-                # clamp bbox to image bounds
-                h, w = img.shape[:2]
-                x1, y1 = max(0, x1), max(0, y1)
-                x2, y2 = min(w, x2), min(h, y2)
-                if x2 <= x1 or y2 <= y1:
-                    logger.debug("Invalid bbox, skipping")
-                    continue
-
+            xyxy = boxes.xyxy.cpu().numpy().astype(int)
+            confs = boxes.conf.cpu().numpy()
+            for i, box in enumerate(xyxy):
+                x1,y1,x2,y2 = box.tolist()
+                det_conf = float(confs[i])
                 plate_img = img[y1:y2, x1:x2]
-                if plate_img.size == 0:
+                if plate_img.size==0:
                     continue
 
-                # Preprocessing list (kept small and robust)
-                preprocs = [
-                    ("original", lambda im: im),
-                    ("gray_otsu", lambda im: cv2.threshold(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]),
-                    ("median_blur_otsu", lambda im: cv2.threshold(cv2.medianBlur(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), 3), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]),
-                    ("adaptive", lambda im: cv2.adaptiveThreshold(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY), 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)),
-                    ("clahe", lambda im: cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8)).apply(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)))
-                ]
+                # preprocessing simple
+                proc = cv2.cvtColor(plate_img, cv2.COLOR_BGR2GRAY)
+                _, proc = cv2.threshold(proc,0,255,cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                proc_3ch = cv2.cvtColor(proc, cv2.COLOR_GRAY2BGR)
 
-                best_text = ""
-                best_score = 0.0
-                best_conf = 0.0
-                best_method = None
-
-                for name, fn in preprocs:
-                    try:
-                        proc = fn(plate_img)
-                        # ensure 3-channel BGR for OCR if needed
-                        if proc.ndim == 2:
-                            proc_3ch = cv2.cvtColor(proc, cv2.COLOR_GRAY2BGR)
+                # OCR
+                ocr_res = ocr_model.ocr(proc_3ch, det=False, rec=True)
+                candidate_text = ""
+                candidate_conf = 0.0
+                if ocr_res and len(ocr_res)>0 and ocr_res[0]:
+                    for item in ocr_res[0]:
+                        val = item[1]
+                        if isinstance(val,(tuple,list)) and len(val)>=2:
+                            txt = str(val[0])
+                            conf_val = float(val[1])
                         else:
-                            proc_3ch = proc
+                            txt = str(val)
+                            conf_val = 0.5
+                        if conf_val>candidate_conf:
+                            candidate_conf = conf_val
+                            candidate_text = txt
 
-                        # PaddleOCR expects BGR or path; use ocr_model.ocr(image, det=True, rec=True)
-                        ocr_res = ocr_model.ocr(proc_3ch, det=True, rec=True)
-                        # ocr_res shape: list of [ [(box), (text, score)], ... ] for each detected text
-                        # We'll take the highest-confidence recognized text for that preproc
-                        candidate_text = None
-                        candidate_conf = 0.0
-                        if ocr_res and len(ocr_res) > 0 and ocr_res[0]:
-                            # iterate detected text regions
-                            for item in ocr_res[0]:
-                                if len(item) >= 2:
-                                    pair = item[1]
-                                    # pair may be (text, confidence)
-                                    if isinstance(pair, (list, tuple)) and len(pair) >= 2:
-                                        txt = str(pair[0]).strip()
-                                        conf_val = float(pair[1])
-                                        if conf_val > candidate_conf:
-                                            candidate_conf = conf_val
-                                            candidate_text = txt
-
-                        if candidate_text:
-                            cleaned = post_process_license_plate(candidate_text)
-                            score = calculate_plate_pattern_score(cleaned)
-                            weighted = score * candidate_conf
-                            if weighted > best_score:
-                                best_score = weighted
-                                best_text = cleaned
-                                best_conf = candidate_conf
-                                best_method = name
-                    except Exception as e:
-                        logger.debug(f"OCR preprocess {name} failed: {e}")
-
-                if best_text:
-                    plate_texts.append({
-                        "text": best_text,
-                        "confidence": float(best_conf),
-                        "preprocessing": best_method,
-                        "bbox": [int(x1), int(y1), int(x2), int(y2)],
-                        "detection_confidence": float(det_conf)
-                    })
-
-        return plate_texts
+                if candidate_text:
+                    cleaned = post_process_license_plate(candidate_text)
+                    score = calculate_plate_pattern_score(cleaned)
+                    weighted = score*candidate_conf
+                    if weighted>0:
+                        plates.append({
+                            "text": cleaned,
+                            "confidence": candidate_conf,
+                            "bbox":[int(x1),int(y1),int(x2),int(y2)],
+                            "detection_confidence": det_conf
+                        })
+        return plates
 
     except Exception as e:
         logger.exception(f"process_image_from_array error: {e}")
         return []
 
+# ===================================================
+# SEND TO LARAVEL
+# ===================================================
+def send_plate_to_laravel(plate_text, frame=None, webcam_index=1, slot_name=None, mode=None, timestamp=None):
+    """Send OCR result to Laravel API including mode/webcam_index and optional image.
+    Returns (success_bool, response_text_or_json)."""
+    if not LARAVEL_API_URL:
+        return False, "Laravel URL not configured"
 
-if __name__ == "__main__":
-    # quick local test (if run directly)
-    yolo, ocr = setup_models()
-    test_img_path = "test.jpg"
-    if os.path.exists(test_img_path):
-        img = cv2.imread(test_img_path)
-        res = process_image_from_array(img, yolo, ocr)
-        print(res)
+    mode_to_send = mode or ("entry" if int(webcam_index) == 1 else "exit")
+
+    # Normalize timestamp to ISO8601 (no microseconds) because Laravel 'date' validator
+    # is more reliable with standard formats like 'YYYY-MM-DDTHH:MM:SSZ'
+    if timestamp is None:
+        ts_str = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
     else:
-        logger.info("No test.jpg found for quick local run.")
+        try:
+            # numeric timestamp (seconds): convert to UTC ISO8601
+            if isinstance(timestamp, (int, float)):
+                ts_str = datetime.fromtimestamp(float(timestamp), timezone.utc).replace(microsecond=0).isoformat()
+                if ts_str.endswith('+00:00'):
+                    ts_str = ts_str.replace('+00:00', 'Z')
+            else:
+                # assume it's already a date string; strip microseconds if present
+                try:
+                    parsed = datetime.fromisoformat(str(timestamp))
+                    ts_str = parsed.replace(microsecond=0).isoformat()
+                    if ts_str.endswith('+00:00'):
+                        ts_str = ts_str.replace('+00:00', 'Z')
+                except Exception:
+                    # fallback to current time
+                    ts_str = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+        except Exception:
+            ts_str = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+
+    payload = {
+        "plate": plate_text,
+        "mode": mode_to_send,
+        "webcam_index": int(webcam_index),
+        "timestamp": ts_str
+    }
+
+    if slot_name:
+        payload["slot_name"] = slot_name
+
+    if frame is not None:
+        try:
+            import base64
+            image_bytes = cv2.imencode(".jpg", frame)[1].tobytes()
+            payload["image_base64"] = base64.b64encode(image_bytes).decode("utf-8")
+        except Exception as e:
+            logger.debug(f"Failed to encode image: {e}")
+
+    headers = {"Content-Type": "application/json"}
+    if ANPR_TOKEN:
+        # attach optional token header if set
+        headers['Authorization'] = f"Bearer {ANPR_TOKEN}"
+
+    last_err = None
+    for attempt in range(1, ANPR_RETRIES + 1):
+        try:
+            r = requests.post(LARAVEL_API_URL, json=payload, headers=headers, timeout=15)
+            try:
+                j = r.json()
+            except Exception:
+                j = r.text
+            if r.status_code in (200, 201):
+                logger.info(f"Laravel stored plate {plate_text}: {r.status_code}")
+                return True, j
+            else:
+                last_err = (r.status_code, j)
+                logger.error(f"Laravel responded {r.status_code}: {j} (attempt {attempt}/{ANPR_RETRIES})")
+        except Exception as e:
+            last_err = str(e)
+            logger.exception(f"Failed send to Laravel (attempt {attempt}/{ANPR_RETRIES}): {e}")
+
+        # backoff
+        time.sleep(ANPR_RETRY_BACKOFF * (2 ** (attempt - 1)))
+
+    # all attempts failed — persist to queue for later retry
+    try:
+        with open(ANPR_QUEUE_FILE, 'a', encoding='utf-8') as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False) + '\n')
+        logger.warning(f"Payload queued to {ANPR_QUEUE_FILE} for retry later")
+    except Exception as e:
+        logger.exception(f"Failed to write to queue file: {e}")
+
+    return False, last_err
+
+
+# Queue flush helpers
+
+def retry_queued_messages():
+    if not os.path.exists(ANPR_QUEUE_FILE):
+        return
+    temp_file = ANPR_QUEUE_FILE + '.tmp'
+    any_left = False
+    try:
+        with open(ANPR_QUEUE_FILE, 'r', encoding='utf-8') as fh_in, open(temp_file, 'w', encoding='utf-8') as fh_out:
+            for line in fh_in:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    fh_out.write(line + '\n')
+                    any_left = True
+                    continue
+                # attempt to resend
+                try:
+                    headers = {"Content-Type": "application/json"}
+                    if ANPR_TOKEN:
+                        headers['Authorization'] = f"Bearer {ANPR_TOKEN}"
+                    r = requests.post(LARAVEL_API_URL, json=payload, headers=headers, timeout=15)
+                    if r.status_code in (200, 201):
+                        logger.info("Queued payload successfully resent")
+                        continue
+                    else:
+                        logger.error(f"Queued payload failed with status {r.status_code}: {r.text}")
+                        fh_out.write(json.dumps(payload, ensure_ascii=False) + '\n')
+                        any_left = True
+                except Exception as e:
+                    logger.exception(f"Error resending queued payload: {e}")
+                    fh_out.write(json.dumps(payload, ensure_ascii=False) + '\n')
+                    any_left = True
+        # replace original queue
+        os.replace(temp_file, ANPR_QUEUE_FILE)
+    except FileNotFoundError:
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+    except Exception as e:
+        logger.exception(f"Error during queue retry: {e}")
+
+
+def queued_retry_worker():
+    while True:
+        try:
+            retry_queued_messages()
+        except Exception:
+            logger.exception("queued_retry_worker failed")
+        time.sleep(ANPR_RETRY_INTERVAL)
+
+# ===================================================
+# CAMERA LOOP (Dual camera: entry=1, exit=2)
+# ===================================================
+
+def run_camera_loop():
+    yolo_model, ocr_model = setup_models()
+
+    cam_in = cv2.VideoCapture(ENTRY_CAMERA_INDEX)
+    cam_out = cv2.VideoCapture(EXIT_CAMERA_INDEX)
+
+    if not cam_in.isOpened():
+        logger.error(f"Cannot open entry camera {ENTRY_CAMERA_INDEX}")
+        # still try to open exit camera
+    if not cam_out.isOpened():
+        logger.error(f"Cannot open exit camera {EXIT_CAMERA_INDEX}")
+
+    if not cam_in.isOpened() and not cam_out.isOpened():
+        logger.error("No cameras available. Exiting.")
+        return
+
+    logger.info(f"Cameras started (in={ENTRY_CAMERA_INDEX}, out={EXIT_CAMERA_INDEX}), press ESC or 'q' to exit")
+
+    # Start background retry worker thread
+    t = threading.Thread(target=queued_retry_worker, daemon=True)
+    t.start()
+
+    last_plate_in = None
+    last_time_in = 0
+    last_plate_out = None
+    last_time_out = 0
+
+    try:
+        while True:
+            # Read frames (if camera available)
+            ret_in, frame_in = (False, None)
+            ret_out, frame_out = (False, None)
+
+            if cam_in.isOpened():
+                ret_in, frame_in = cam_in.read()
+            if cam_out.isOpened():
+                ret_out, frame_out = cam_out.read()
+
+            # Process entry camera
+            if ret_in and frame_in is not None:
+                plates_in = process_image_from_array(frame_in, yolo_model, ocr_model)
+                for plate in plates_in:
+                    plate_text = plate.get("text")
+                    if plate_text and (plate_text != last_plate_in or time.time() - last_time_in > COOLDOWN):
+                        last_plate_in = plate_text
+                        last_time_in = time.time()
+                        logger.info(f"[ENTRY] Plate detected: {plate_text}")
+                        # send detection only (no image) and mode 'entry'
+                        send_plate_to_laravel(plate_text, frame=None, webcam_index=1, slot_name=None, mode='entry')
+                    x1, y1, x2, y2 = plate.get("bbox", [0,0,0,0])
+                    cv2.rectangle(frame_in, (x1,y1), (x2,y2), (0,255,0), 2)
+                    cv2.putText(frame_in, plate_text, (x1, max(y1-5,0)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+
+            # Process exit camera
+            if ret_out and frame_out is not None:
+                plates_out = process_image_from_array(frame_out, yolo_model, ocr_model)
+                for plate in plates_out:
+                    plate_text = plate.get("text")
+                    if plate_text and (plate_text != last_plate_out or time.time() - last_time_out > COOLDOWN):
+                        last_plate_out = plate_text
+                        last_time_out = time.time()
+                        logger.info(f"[EXIT] Plate detected: {plate_text}")
+                        # send detection only (no image) and mode 'exit'
+                        send_plate_to_laravel(plate_text, frame=None, webcam_index=2, slot_name=None, mode='exit')
+                    x1, y1, x2, y2 = plate.get("bbox", [0,0,0,0])
+                    cv2.rectangle(frame_out, (x1,y1), (x2,y2), (255,0,0), 2)
+                    cv2.putText(frame_out, plate_text, (x1, max(y1-5,0)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,0,0), 2)
+
+            # Show windows
+            if ret_in and frame_in is not None:
+                cv2.imshow(f"ANPR ENTRY CAM (index={ENTRY_CAMERA_INDEX})", frame_in)
+            if ret_out and frame_out is not None:
+                cv2.imshow(f"ANPR EXIT CAM (index={EXIT_CAMERA_INDEX})", frame_out)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27 or key == ord('q'):
+                break
+
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+    finally:
+        if cam_in.isOpened():
+            cam_in.release()
+        if cam_out.isOpened():
+            cam_out.release()
+        cv2.destroyAllWindows()
+        logger.info("Cameras stopped")
+
+# ===================================================
+# MAIN
+# ===================================================
+if __name__=="__main__":
+    run_camera_loop()

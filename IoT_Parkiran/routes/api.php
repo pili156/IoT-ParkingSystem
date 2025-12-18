@@ -6,7 +6,8 @@ use Illuminate\Support\Facades\Route;
 // Import Controller yang SUDAH kita perbaiki tadi
 use App\Http\Controllers\IncomingCarController;
 use App\Http\Controllers\OutgoingCarController;
-use App\Http\Controllers\IoTController;
+use App\Http\Controllers\API\IoTController;
+use App\Http\Controllers\API\ANPRController;
 
 /*
 |--------------------------------------------------------------------------
@@ -22,22 +23,22 @@ use App\Http\Controllers\IoTController;
 
 // Update status slot (Full/Empty) dari Sensor IR di dalam parkiran
 // Method: POST | URL: http://ip-laptop:8000/api/iot-event
-Route::post('/iot-event', [IoTController::class, 'event']);
+Route::post('/iot-event', [IoTController::class, 'handleEvent']);
 
 // Ambil info sisa slot untuk ditampilkan di LCD Depan
 // Method: GET | URL: http://ip-laptop:8000/api/parking-info
 Route::get('/parking-info', [IoTController::class, 'getParkingInfo']);
 
+// Device polls for any active commands (OPEN_GATE_EXIT/ENTER) - POST expected from ESP32
+Route::post('/get-command', [IoTController::class, 'getCommand']);
+Route::post('/consume-command', [IoTController::class, 'consumeCommand']);
+
 
 // --- 2. JALUR KHUSUS KAMERA & DATA (Python Script) ---
 
-// Simpan data mobil MASUK (Foto & Waktu)
-// Method: POST | URL: http://ip-laptop:8000/api/incoming-car
-Route::post('/incoming-car', [IncomingCarController::class, 'store']);
-
-// Simpan data mobil KELUAR (Foto, Waktu, & Hitung Duit)
-// Method: POST | URL: http://ip-laptop:8000/api/outgoing-car
-Route::post('/outgoing-car', [OutgoingCarController::class, 'store']);
+// API untuk ANPR result dari Python (masuk/keluar)
+// Method: POST | URL: http://ip-laptop:8000/api/anpr/result
+Route::post('/anpr/result', [ANPRController::class, 'storeResult']);
 
 
 // --- 3. TEST CONNECTION (Opsional) ---

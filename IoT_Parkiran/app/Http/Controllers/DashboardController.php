@@ -4,7 +4,6 @@ namespace App\Http\Controllers;
 
 use App\Models\IncomingCar;
 use App\Models\OutgoingCar;
-use App\Models\ParkingSlot;
 
 class DashboardController extends Controller
 {
