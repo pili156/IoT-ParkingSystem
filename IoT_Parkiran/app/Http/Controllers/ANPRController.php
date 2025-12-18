@@ -6,7 +6,6 @@ use Illuminate\Http\Request;
 use App\Models\IncomingCar;
 use App\Models\OutgoingCar;
 use App\Models\EspCommand;
-use App\Models\ParkingSlot;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Storage;
 
@@ -102,11 +101,8 @@ class ANPRController extends Controller
 
         $car = IncomingCar::create($carData);
 
-        // If slot provided, mark it full
-        if ($slotName) {
-            $pSlot = ParkingSlot::where('slot_name', $slotName)->first();
-            if ($pSlot) $pSlot->update(['status' => 'Full']);
-        }
+        // Slot management is handled by ESP32 devices (IoTController); do NOT modify ParkingSlot from ANPR flow
+        // We still store the provided slot_name in the record, but we won't query/update the ParkingSlot table here.
 
         // Trigger buka gerbang masuk (ESP32)
         EspCommand::create(['command' => 'OPEN_GATE_ENTER', 'is_executed' => false]);
@@ -173,11 +169,7 @@ class ANPRController extends Controller
             // Update incoming car status
             $entry->update(['status' => 'out']);
 
-            // Update parking slot to empty if slot_name exists on the incoming record
-            if (!empty($entry->slot_name)) {
-                $pSlot = ParkingSlot::where('slot_name', $entry->slot_name)->first();
-                if ($pSlot) $pSlot->update(['status' => 'Empty']);
-            }
+            // Slot status changes must come from ESP32. Do not modify ParkingSlot here.
 
             EspCommand::create(['command' => 'OPEN_GATE_EXIT']);
 
@@ -206,11 +198,7 @@ class ANPRController extends Controller
         // Update incoming car status
         $entry->update(['status' => 'out']);
 
-        // Update parking slot to empty based on slot_name if available
-        if (!empty($outgoing->slot_name)) {
-            $pSlot = ParkingSlot::where('slot_name', $outgoing->slot_name)->first();
-            if ($pSlot) $pSlot->update(['status' => 'Empty']);
-        }
+        // Slot status changes must come from ESP32 devices (IoTController). We do not touch ParkingSlot here.
 
         // Trigger buka gerbang keluar (ESP32)
         EspCommand::create(['command' => 'OPEN_GATE_EXIT', 'is_executed' => false, 'bill' => $bill, 'total_time' => $totalTimeFormatted]);

@@ -35,7 +35,7 @@ def test_anpr_api():
         payload = {
             "plate": plate,
             "webcam_index": webcam,
-            "timestamp": time.time()
+            "timestamp": datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
         }
         # include slot_name for test scenario
         payload['slot_name'] = 'Slot-1'
@@ -54,12 +54,23 @@ def test_anpr_api():
             )
 
             print(f"  Status: {response.status_code}")
-            print(f"  Response: {response.json()}")
+            resp_json = response.json()
+            print(f"  Response: {resp_json}")
             
+            # Validate based on webcam index: 1 -> entry, 2 -> exit
+            data = None
+            if isinstance(resp_json, dict):
+                data = resp_json.get('data') if 'data' in resp_json else resp_json
+
             if response.status_code in (200, 201):
-                print("  ✓ SUCCESS")
+                if webcam == 1 and data and 'entry' in data:
+                    print("  ✓ SUCCESS (entry recorded)")
+                elif webcam == 2 and data and 'outgoing' in data:
+                    print("  ✓ SUCCESS (exit recorded)")
+                else:
+                    print("  ✗ FAILED (unexpected response body)")
             else:
-                print("  ✗ FAILED")
+                print("  ✗ FAILED (status)")
 
         except requests.exceptions.ConnectionError:
             print(f"  ✗ CONNECTION ERROR - Laravel not responding")

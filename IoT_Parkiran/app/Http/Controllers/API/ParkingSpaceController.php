@@ -15,14 +15,22 @@ class ParkingSpaceController extends Controller
      */
     public function index(Request $request)
     {
-        $slots = ParkingSlot::all();
-        
+        // We do not expose direct DB state for ParkingSlot here; state is managed by ESP32.
+        $totalSlots = 4;
+        $slots = collect();
+        for ($i = 1; $i <= $totalSlots; $i++) {
+            $slots->push((object)[
+                'slot_name' => "Slot-" . $i,
+                'status' => 'Managed by ESP32'
+            ]);
+        }
+
         return $this->successResponse([
             'slots' => $slots,
-            'total_slots' => $slots->count(),
-            'available_slots' => $slots->where('status', 'Empty')->count(),
-            'occupied_slots' => $slots->where('status', 'Full')->count()
-        ], 'Parking slots retrieved successfully');
+            'total_slots' => $totalSlots,
+            'available_slots' => null,
+            'occupied_slots' => null
+        ], 'Parking slots are managed by ESP32');
     }
 
     /**
@@ -30,13 +38,14 @@ class ParkingSpaceController extends Controller
      */
     public function show(Request $request, $id)
     {
-        $slot = ParkingSlot::find($id);
-
-        if (!$slot) {
-            return $this->errorResponse('Parking slot not found', [], 404);
-        }
-
-        return $this->successResponse($slot, 'Slot data retrieved successfully');
+        // We do not read ParkingSlot here; return a placeholder indicating ESP32 manages real status.
+        return $this->successResponse([
+            'slot' => (object)[
+                'id' => $id,
+                'slot_name' => "Slot-" . $id,
+                'status' => 'Managed by ESP32'
+            ]
+        ], 'Slot information is managed by ESP32');
     }
 
     /**
@@ -134,8 +143,8 @@ class ParkingSpaceController extends Controller
         return $this->successResponse([
             'vehicles' => $currentVehicles,
             'count' => count($currentVehicles),
-            'available_slots' => ParkingSlot::where('status', 'Empty')->count(),
-            'occupied_slots' => ParkingSlot::where('status', 'Full')->count()
-        ], 'Current vehicles and slot status retrieved successfully');
+            'available_slots' => null,
+            'occupied_slots' => null
+        ], 'Current vehicles retrieved; slot state is managed by ESP32');
     }
 }

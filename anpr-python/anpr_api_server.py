@@ -17,6 +17,15 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("anpr_api_server")
 
+# Retry / queue settings
+ANPR_RETRIES = int(os.getenv('ANPR_RETRIES', 3))
+ANPR_RETRY_BACKOFF = int(os.getenv('ANPR_RETRY_BACKOFF', 1))
+ANPR_RETRY_INTERVAL = int(os.getenv('ANPR_RETRY_INTERVAL', 30))
+ANPR_QUEUE_FILE = os.getenv('ANPR_QUEUE_FILE', 'anpr_failed_queue.jsonl')
+ANPR_TOKEN = os.getenv('ANPR_TOKEN', None)
+import json
+import threading
+
 # Configs (env override)
 LARAVEL_API_URL = os.getenv("LARAVEL_API_URL", "http://localhost:8000/api")
 ANPR_TOKEN = os.getenv("ANPR_TOKEN", "your_anpr_token_here")
@@ -46,45 +55,61 @@ def send_to_laravel_api(plate_number, webcam_index=1, image_bytes=None, timestam
     Sends recognized plate to Laravel backend.
     Args:
         plate_number: Nomor plat (format: BA3242CD)
-        webcam_index: 1 untuk masuk, 2 untuk keluar
+        webcam_index: 1 untuk masuk, 2 untuk 
         image_bytes: Raw image bytes (optional)
         timestamp: Unix timestamp (optional, akan use server time jika None)
     
     Returns (success_bool, response_json_or_text)
     """
+    payload = {
+        "plate": plate_number.upper().replace(' ', ''),
+        "webcam_index": webcam_index,
+        "timestamp": timestamp or time.time()
+    }
+    if image_bytes:
+        import base64
+        payload["image_base64"] = base64.b64encode(image_bytes).decode("utf-8")
+
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    if ANPR_TOKEN:
+        headers['Authorization'] = f"Bearer {ANPR_TOKEN}"
+
+    url = f"{LARAVEL_API_URL.rstrip('/')}/anpr/result"
+    logger.info(f"Posting to Laravel {url} | plate={plate_number} | webcam={webcam_index}")
+    if slot_name:
+        payload['slot_name'] = slot_name
+    last_err = None
+    for attempt in range(1, ANPR_RETRIES + 1):
+        try:
+            r = requests.post(url, json=payload, headers=headers, timeout=30)
+            if r.status_code in (200, 201):
+                try:
+                    return True, r.json()
+                except Exception:
+                    return True, r.text
+            elif r.status_code == 409:
+                logger.info(f"Laravel returned 409 (no action needed): {r.text}")
+                return False, r.text
+            else:
+                last_err = r.text
+                logger.error(f"Laravel responded {r.status_code}: {r.text} (attempt {attempt}/{ANPR_RETRIES})")
+        except Exception as e:
+            last_err = str(e)
+            logger.exception(f"Error sending to Laravel (attempt {attempt}/{ANPR_RETRIES}): {e}")
+
+        time.sleep(ANPR_RETRY_BACKOFF * (2 ** (attempt - 1)))
+
+    # failed all attempts: queue payload
     try:
-        payload = {
-            "plate": plate_number.upper().replace(' ', ''),
-            "webcam_index": webcam_index,
-            "timestamp": timestamp or time.time()
-        }
-        if image_bytes:
-            import base64
-            payload["image_base64"] = base64.b64encode(image_bytes).decode("utf-8")
-
-        headers = {
-            "Authorization": f"Bearer {ANPR_TOKEN}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
-
-        url = f"{LARAVEL_API_URL.rstrip('/')}/anpr/result"
-        logger.info(f"Posting to Laravel {url} | plate={plate_number} | webcam={webcam_index}")
-        if slot_name:
-            payload['slot_name'] = slot_name
-        r = requests.post(url, json=payload, headers=headers, timeout=30)
-        
-        if r.status_code in (200, 201):
-            try:
-                return True, r.json()
-            except Exception:
-                return True, r.text
-        else:
-            logger.error(f"Laravel responded {r.status_code}: {r.text}")
-            return False, r.text
+        with open(ANPR_QUEUE_FILE, 'a', encoding='utf-8') as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False) + '\n')
+        logger.warning(f"Payload queued to {ANPR_QUEUE_FILE} for retry later")
     except Exception as e:
-        logger.exception(f"Error sending to Laravel: {e}")
-        return False, str(e)
+        logger.exception(f"Failed to write to queue file: {e}")
+    return False, last_err
 
 
 def process_camera_image(image_data):
@@ -171,17 +196,63 @@ def process_image_endpoint():
 
 
 @app.route("/health", methods=["GET"])
-def health():
-    return jsonify({
-        "success": True,
-        "models_loaded": (yolo_model is not None) and (ocr_model is not None),
-        "yolo_path": MODEL_YOLO_PATH,
-        "ocr_dir": MODEL_OCR_DIR,
-        "timestamp": time.time()
-    }), 200
+def retry_queued_messages():
+    if not os.path.exists(ANPR_QUEUE_FILE):
+        return
+    temp_file = ANPR_QUEUE_FILE + '.tmp'
+    try:
+        with open(ANPR_QUEUE_FILE, 'r', encoding='utf-8') as fh_in, open(temp_file, 'w', encoding='utf-8') as fh_out:
+            for line in fh_in:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    fh_out.write(line + '\n')
+                    continue
+                try:
+                    headers = {"Content-Type": "application/json"}
+                    if ANPR_TOKEN:
+                        headers['Authorization'] = f"Bearer {ANPR_TOKEN}"
+                    url = f"{LARAVEL_API_URL.rstrip('/')}/anpr/result"
+                    r = requests.post(url, json=payload, headers=headers, timeout=30)
+                    if r.status_code in (200, 201):
+                        logger.info("Queued payload successfully resent")
+                        continue
+                    elif r.status_code == 409:
+                        # The record already exists / not applicable anymore; drop it from future retries
+                        logger.info(f"Queued payload discarded (409): {r.text}")
+                        continue
+                    else:
+                        logger.error(f"Queued payload failed with status {r.status_code}: {r.text}")
+                        fh_out.write(json.dumps(payload, ensure_ascii=False) + '\n')
+                except Exception as e:
+                    logger.exception(f"Error resending queued payload: {e}")
+                    fh_out.write(json.dumps(payload, ensure_ascii=False) + '\n')
+        os.replace(temp_file, ANPR_QUEUE_FILE)
+    except FileNotFoundError:
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+    except Exception as e:
+        logger.exception(f"Error during queue retry: {e}")
+
+
+def queued_retry_worker():
+    while True:
+        try:
+            retry_queued_messages()
+        except Exception:
+            logger.exception("queued_retry_worker failed")
+        time.sleep(ANPR_RETRY_INTERVAL)
 
 
 if __name__ == "__main__":
     initialize_models()
+
+    # Start queue background worker
+    t = threading.Thread(target=queued_retry_worker, daemon=True)
+    t.start()
+
     # Run Flask app
     app.run(host="0.0.0.0", port=int(os.getenv("ANPR_PORT", 5000)), debug=False)

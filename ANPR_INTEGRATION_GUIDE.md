@@ -38,6 +38,11 @@ Sistem ANPR (Automatic Number Plate Recognition) terhubung dengan Laravel untuk 
 - Format plat: uppercase, no spaces (contoh: `BA3242CD`)
 - Debounce: 4 detik untuk avoid duplicate
 
+#### `anpr_bisa.py` (single/dual-mode)
+- Can run in single camera mode or dual-camera mode
+- Use environment variables `ENTRY_CAMERA_INDEX` (default `1`) and `EXIT_CAMERA_INDEX` (default `2`) to map cameras to entry/exit
+- Payload sent to Laravel: `{ "plate", "mode": "entry|exit", "webcam_index", "timestamp" }` — this matches Postman examples
+
 ### 2. **Laravel Backend**
 
 #### `ANPRController@storeResult`
